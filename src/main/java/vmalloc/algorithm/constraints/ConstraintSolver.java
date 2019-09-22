@@ -32,6 +32,7 @@ import org.sat4j.specs.IVec;
 import org.sat4j.specs.IVecInt;
 
 import vmalloc.Clock;
+import vmalloc.exception.NotSupportedException;
 
 /**
  * Abstract superclass for constraint solvers.
@@ -287,67 +288,38 @@ public abstract class ConstraintSolver extends ConstraintAggregator {
     }
     
     /**
-     * Helper method for adding constraints encoded into conjunctive normal form. Adds an auxiliary clause
-     * to the solver and adds its constraint ID to the {@code ids} vector. If {@code ids} is {@code null},
-     * then it is assumed that the constraint is not removable and no constraint ID is generated for the
-     * clause.
-     * @param lits The clause's literals.
-     * @param ids A vector of constraint IDs in which to store the clause's constraint ID, or {@code null}
-     * if the constraint is not removable.
-     * @throws ContradictionException If the solver detects that the addition of the clause would
-     * result in a contradiction.
-     */
-    private void addAuxiliaryClause(IVecInt lits, IVec<ConstraintID> ids) throws ContradictionException {
-        if (ids != null) {
-            ids.push(addRemovableClause(lits));
-        }
-        else {
-            addClause(lits);
-        }
-    }
-    
-    /**
      * Sub-routine used in the binary tree encoding of XOR constraints into conjunctive normal form. Encodes
      * a binary XOR constraint, where the arguments are the output literals of two of the encoding's
      * sub-trees. This results in the merging of those sub-trees into a single tree. A new output literal is
-     * generated for the new tree and returned. The corresponding constraint IDs are added to the {@code ids}
-     * vector. If {@code ids} is {@code null}, then it is assumed that the XOR constraint is not removable
-     * and no constraint IDs are generated for the constraint.
+     * generated for the new tree and returned.
      * @param left_out The output literal of the left sub-tree.
      * @param right_out The output literal of the right sub-tree.
-     * @param ids A vector of constraint IDs in which to store the XOR constraint's IDs, or {@code null} if
-     * the constraint is not removable.
      * @return A fresh output literal for the merged tree.
      * @throws ContradictionException If the solver detects that the addition of the clause would
      * result in a contradiction.
      * @see #xorToCNF(IVecInt, IVec)
      */
-    private int mergeSubXOR(int left_out, int right_out, IVec<ConstraintID> ids) throws ContradictionException {
+    private int mergeSubXOR(int left_out, int right_out) throws ContradictionException {
         newVar();
         int out = nVars();
-        addAuxiliaryClause(new VecInt(new int[] { -left_out, right_out, out }), ids);
-        addAuxiliaryClause(new VecInt(new int[] { left_out, -right_out, out }), ids);
-        addAuxiliaryClause(new VecInt(new int[] { left_out, right_out, -out }), ids);
-        addAuxiliaryClause(new VecInt(new int[] { -left_out, -right_out, -out }), ids);
+        addClause(new VecInt(new int[] { -left_out, right_out, out }));
+        addClause(new VecInt(new int[] { left_out, -right_out, out }));
+        addClause(new VecInt(new int[] { left_out, right_out, -out }));
+        addClause(new VecInt(new int[] { -left_out, -right_out, -out }));
         return out;
     }
     
     /**
      * Converts a XOR constraint to conjunctive normal form using a binary tree encoding. An output literal
      * is returned that must be used to set the right hand side of the XOR constraint. If an odd number of
-     * literals are to be satisfied, then the output literal must be true, otherwise it must be false. The
-     * corresponding constraint IDs are added to the {@code ids} vector. If {@code ids} is {@code null}, then
-     * it is assumed that the XOR constraint is not removable and no constraint IDs are generated for the
-     * constraint.
+     * literals are to be satisfied, then the output literal must be true, otherwise it must be false.
      * @param lits The constraint's literals.
-     * @param ids A vector of constraint IDs in which to store the XOR constraint's IDs, or {@code null} if
-     * the constraint is not removable.
      * @return The constraint's output literal.
      * @throws ContradictionException If the solver detects that the addition of the clause would
      * result in a contradiction.
      * @see #addXOR_core(IVecInt, boolean, int, IVec)
      */
-    private int xorToCNF(IVecInt lits, IVec<ConstraintID> ids) throws ContradictionException {
+    private int xorToCNF(IVecInt lits) throws ContradictionException {
         assert(lits.size() > 1);
         int split = lits.size() / 2;
         IVecInt left = new VecInt();
@@ -360,18 +332,18 @@ public abstract class ConstraintSolver extends ConstraintAggregator {
         }
         int left_out, right_out;
         if (left.size() > 1) {
-            left_out = xorToCNF(left, ids);
+            left_out = xorToCNF(left);
         }
         else {
             left_out = left.get(0);
         }
         if (right.size() > 1) {
-            right_out = xorToCNF(right, ids);
+            right_out = xorToCNF(right);
         }
         else {
             right_out = right.get(0);
         }
-        return mergeSubXOR(left_out, right_out, ids);
+        return mergeSubXOR(left_out, right_out);
     }
     
     /**
@@ -383,25 +355,23 @@ public abstract class ConstraintSolver extends ConstraintAggregator {
     /**
      * Core method that adds a XOR constraint to the solver by converting to conjunctive normal form using a
      * binary tree encoding. The user may provide an activator literal that can then be used to enable and
-     * disable the constraint without the need to remove and re-add. The corresponding constraint IDs are
-     * added to the {@code ids} vector. If {@code ids} is {@code null}, then it is assumed that the XOR
-     * constraint is not removable and no constraint IDs are generated for the constraint.
+     * disable the constraint without the need to remove and re-add. The user may also specify if the
+     * constraint should be removable or not, in which case a {@link ConstraintID} is returned.
      * @param lits The XOR constraint's literals.
      * @param rhs The right hand side of the constraint. If true, then the XOR constraint forces an odd
      * number of the literals to be satisfied, otherwise an even number of literals are to be satisfied
      * instead.
      * @param activator The activator literal, or {@link #NO_ACTIVATOR} if no activation literal is needed.
-     * @param ids A vector of constraint IDs in which to store the XOR constraint's IDs, or {@code null} if
-     * the constraint is not removable.
+     * @param is_rm True if the constraint is to be removable, false otherwise.
+     * @return The constraint's ID if {@code is_rm} is true, {@code null} otherwise.
      * @throws ContradictionException If the solver detects that the addition of the clause would
      * result in a contradiction.
      */
-    private void addXOR_core(IVecInt lits, boolean rhs, int activator, IVec<ConstraintID> ids)
+    private ConstraintID addXOR_core(IVecInt lits, boolean rhs, int activator, boolean is_rm)
             throws ContradictionException {
-        assert(ids == null || ids.isEmpty());
         IVecInt activation_clause = new VecInt();
         if (lits.size() > 1) {
-            int out = xorToCNF(lits, ids);
+            int out = xorToCNF(lits);
             activation_clause.push((rhs) ? out : -out);
         }
         else if (lits.size() == 1) {
@@ -410,7 +380,11 @@ public abstract class ConstraintSolver extends ConstraintAggregator {
         if (activator != NO_ACTIVATOR) {
             activation_clause.push(-activator);
         }
-        addAuxiliaryClause(activation_clause, ids);
+        if (is_rm) {
+            return addRemovableClause(activation_clause);
+        }
+        addClause(activation_clause);
+        return null;
     }
     
     /**
@@ -421,16 +395,12 @@ public abstract class ConstraintSolver extends ConstraintAggregator {
      * number of the literals to be satisfied, otherwise an even number of literals are to be satisfied
      * instead.
      * @param activator The activator literal.
-     * @return A vector with a set of constraint IDs that must be removed in order to completely remove the
-     * XOR constraint.
+     * @return The XOR constraint's ID.
      * @throws ContradictionException If the solver detects that the addition of the clause would
      * result in a contradiction.
      */
-    // FIXME: return a single constraint ID
-    public IVec<ConstraintID> addRemovableXOR(IVecInt lits, boolean rhs, int activator) throws ContradictionException {
-        IVec<ConstraintID> ids = new Vec<ConstraintID>();
-        addXOR_core(lits, rhs, activator, ids);
-        return ids;
+    public ConstraintID addRemovableXOR(IVecInt lits, boolean rhs, int activator) throws ContradictionException {
+        return addXOR_core(lits, rhs, activator, true);
     }
     
     /**
@@ -439,13 +409,11 @@ public abstract class ConstraintSolver extends ConstraintAggregator {
      * @param rhs The right hand side of the constraint. If true, then the XOR constraint forces an odd
      * number of the literals to be satisfied, otherwise an even number of literals are to be satisfied
      * instead.
-     * @return A vector with a set of constraint IDs that must be removed in order to completely remove the
-     * XOR constraint.
+     * @return The XOR constraint's ID.
      * @throws ContradictionException If the solver detects that the addition of the clause would
      * result in a contradiction.
      */
-    // FIXME: return a single constraint ID
-    public IVec<ConstraintID> addRemovableXOR(IVecInt lits, boolean rhs) throws ContradictionException {
+    public ConstraintID addRemovableXOR(IVecInt lits, boolean rhs) throws ContradictionException {
         return addRemovableXOR(lits, rhs, NO_ACTIVATOR);
     }
     
@@ -461,7 +429,7 @@ public abstract class ConstraintSolver extends ConstraintAggregator {
      * result in a contradiction.
      */
     public void addXOR(IVecInt lits, boolean rhs, int activator) throws ContradictionException {
-        addXOR_core(lits, rhs, activator, null);
+        addXOR_core(lits, rhs, activator, false);
     }
     
     /**
@@ -583,5 +551,26 @@ public abstract class ConstraintSolver extends ConstraintAggregator {
      * @see #isUnsatisfiable()
      */
     public abstract IVecInt unsatExplanation();
+    
+    /**
+     * If the constraint set is satisfiable, returns a model as an array of Booleans, where
+     * {@code model[i]} is the value assigned to variable {@code i+1}.
+     * @return The model as an array of Booleans.
+     */
+    public boolean[] getModel() {
+        boolean[] model = new boolean[nVars()];
+        for (int x = 1; x <= nVars(); ++x) {
+            model[x-1] = modelValue(x);
+        }
+        return model;
+    }
+    
+    /**
+     * Retrieves the solver's current number of conflicts.
+     * @return The current number of conflicts.
+     */
+    public long getConflicts() {
+        throw new NotSupportedException(this.getClass().getSimpleName() + " does not support stats");
+    }
     
 }

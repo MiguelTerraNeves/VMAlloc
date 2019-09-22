@@ -35,6 +35,7 @@ import org.moeaframework.core.spi.OperatorFactory;
 import org.moeaframework.util.TypedProperties;
 
 import vmalloc.algorithm.evolutionary.SVUM;
+import vmalloc.algorithm.evolutionary.SmartMutation;
 import vmalloc.algorithm.evolutionary.VMCwMProblem;
 
 /**
@@ -71,12 +72,13 @@ public class MOEADAlloc extends EvolutionaryAllocAlgorithm {
                 int pop_size =
                         typed_props.getInt("populationSize", Math.max(100, problem.getNumberOfObjectives()));
                 Initialization init = makeInitializer(problem, pop_size);
-                Variation variation = OperatorFactory.getInstance().getVariation("ux+svum", properties, problem);
+                Variation variation = OperatorFactory.getInstance().getVariation("ux+svum+sm", properties, problem);
                 int neighbordhoodSize = (int)(typed_props.getDouble("neighborhoodSize", 0.1) * pop_size);
                 neighbordhoodSize = Math.max(2, Math.min(pop_size, neighbordhoodSize));
                 int eta = Math.max(2, (int)(typed_props.getDouble("eta", 0.01) * pop_size));
                 double delta = typed_props.getDouble("delta", 0.9);
-                return new MOEAD(problem, neighbordhoodSize, init, variation, delta, eta);
+                return decorateWithPeriodicActions(
+                        new MOEAD(problem, neighbordhoodSize, init, variation, delta, eta));
             }
             return null;
         }
@@ -96,39 +98,103 @@ public class MOEADAlloc extends EvolutionaryAllocAlgorithm {
     @Override
     public void setTimeout(long timeout) {
         super.setTimeout(timeout);
-        exec = exec.withProperty("sm.timeout", getTimeout());
+        this.exec = this.exec.withProperty("sm.timeout", getTimeout());
     }
     
     /**
      * Sets the uniform crossover rate to be used by the algorithm.
      * @param rate The crossover rate.
      */
-    public void setCrossoverRate(double rate) { exec = exec.withProperty("ux.rate", rate); }
+    public void setCrossoverRate(double rate) { this.exec = this.exec.withProperty("ux.rate", rate); }
     
     /**
      * Sets the single value uniform mutation rate to be used by the algorithm.
      * @param rate The mutation rate.
      * @see SVUM
      */
-    public void setMutationRate(double rate) { exec = exec.withProperty("svum.rate", rate); }
+    public void setMutationRate(double rate) { this.exec = this.exec.withProperty("svum.rate", rate); }
+
+    /**
+     * Set the smart mutation rate to be used by the algorithm.
+     * @param rate The smart mutation rate.
+     * @see SmartMutation
+     */
+    public void setSmartMutationRate(double rate) { this.exec = this.exec.withProperty("sm.rate", rate); }
+    
+    /**
+     * Set the maximum number of conflicts for smart mutation.
+     * @param max_conflicts The maximum number of conflicts.
+     * @see SmartMutation
+     */
+    public void setMaxConflicts(long max_conflicts) {
+        exec = exec.withProperty("sm.maxConflicts", max_conflicts);
+    }
+    
+    /**
+     * Disables exploitation of domain knowledge when deciding which variables to be unassigned before
+     * applying smart mutation.
+     * @see SmartMutation
+     */
+    public void disableDomainBasedUnfixing() { this.exec = this.exec.withProperty("sm.domainUnfix", false); }
+    
+    /**
+     * Enables application of smart improvement when a given solution is already feasible.
+     * @see SmartMutation
+     */
+    public void enableSmartImprovement() { this.exec = this.exec.withProperty("sm.improve", true); }
+    
+    /**
+     * Set the maximum number of conflicts for smart improvement.
+     * @param max_conflicts The maximum number of conflicts.
+     * @see SmartMutation
+     */
+    public void setImprovementMaxConflicts(long max_conflicts) {
+        this.exec = this.exec.withProperty("sm.improve.maxConflicts", max_conflicts);
+    }
+    
+    /**
+     * Smart improvement applies the stratified Pareto-MCS algorithm. This method sets the number of
+     * conflicts allowed before merging some partition with the next one.
+     * @param max_conflicts The maximum number of conflicts before merging.
+     * @see SmartMutation
+     */
+    public void setImprovementPartMaxConflicts(long max_conflicts) {
+        this.exec = this.exec.withProperty("sm.improve.partMaxConflicts", max_conflicts);
+    }
+    
+    /**
+     * Set the fraction of servers to be displaced before applying smart improvement.
+     * @param rate The displacement fraction.
+     * @see SmartMutation
+     */
+    public void setImprovementRelaxRate(double rate) {
+        this.exec = this.exec.withProperty("sm.improve.relaxRate", rate);
+    }
+    
+    /**
+     * Sets the literal-weight ratio for the stratified Pareto-MCS algorithm.
+     * @param ratio The literal-weight ratio.
+     * @see ParetoCLD
+     */
+    public void setLitWeightRatio(double ratio) { this.exec = this.exec.withProperty("sm.improve.lwr", ratio); }
     
     /**
      * Sets the neighborhood size as a fraction of the population size.
      * @param f The fraction of the population size.
      */
-    public void setNeighborhoodSize(double f) { exec = exec.withProperty("neighborhoodSize", f); }
+    public void setNeighborhoodSize(double f) { this.exec = this.exec.withProperty("neighborhoodSize", f); }
     
     /**
      * Sets the probability of performing crossover with an individual of the neighborhood.
      * @param delta The neighborhood crossover probability.
      */
-    public void setDelta(double delta) { exec = exec.withProperty("delta", delta); }
+    public void setDelta(double delta) { this.exec = this.exec.withProperty("delta", delta); }
     
     /**
      * Sets the maximum portion of the population that can be replaced by a new solution as a fraction of the
      * population size.
      * @param eta The fraction of the population size.
      */
-    public void setEta(double eta) { exec = exec.withProperty("eta", eta); }
+    public void setEta(double eta) { this.exec = this.exec.withProperty("eta", eta); }
 
 }

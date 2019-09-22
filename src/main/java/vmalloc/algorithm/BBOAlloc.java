@@ -494,12 +494,13 @@ public class BBOAlloc extends EvolutionaryAllocAlgorithm {
                 double cross_mig_rate = typed_props.getDouble("crossMigrationRate", 0.5);
                 Variation mutation =
                         OperatorFactory.getInstance().getVariation("svum", properties, problem);
-                return new BBO(problem,
-                               populations,
-                               immig_rate,
-                               cross_mig_rate,
-                               mutation,
-                               initialization);
+                return decorateWithPeriodicActions(
+                        new BBO(problem,
+                                populations,
+                                immig_rate,
+                                cross_mig_rate,
+                                mutation,
+                                initialization));
             }
             return null;
         }

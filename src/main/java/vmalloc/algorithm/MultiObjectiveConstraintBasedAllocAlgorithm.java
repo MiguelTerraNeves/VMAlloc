@@ -238,7 +238,7 @@ public abstract class MultiObjectiveConstraintBasedAllocAlgorithm extends Constr
      * Vector of Boolean variables, one for each physical machine in the problem index. These are auxiliary
      * variables used in the linearization of the absolute value operator in the resource wastage function.
      */
-    private IVecInt aux_pm_pvars = null;
+    protected IVecInt aux_pm_pvars = null;
     
     /**
      * Vector of vectors of vectors of Boolean variables. There is one vector of vectors for each job in the
@@ -246,7 +246,7 @@ public abstract class MultiObjectiveConstraintBasedAllocAlgorithm extends Constr
      * in the {@code i}-th job. These are auxiliary variables used in the linearization of the absolute value
      * operator in the resource wastage function.
      */
-    private IVec<IVec<IVecInt>> aux_job_plus_vars = null;
+    protected IVec<IVec<IVecInt>> aux_job_plus_vars = null;
     
     /**
      * Vector of vectors of vectors of Boolean variables. There is one vector of vectors for each job in the
@@ -254,7 +254,7 @@ public abstract class MultiObjectiveConstraintBasedAllocAlgorithm extends Constr
      * in the {@code i}-th job. These are auxiliary variables used in the linearization of the absolute value
      * operator in the resource wastage function.
      */
-    private IVec<IVec<IVecInt>> aux_job_minus_vars = null;
+    protected IVec<IVec<IVecInt>> aux_job_minus_vars = null;
     
     /**
      * Boolean indicating if objective function denominators are to be ignored or not.
@@ -670,25 +670,53 @@ public abstract class MultiObjectiveConstraintBasedAllocAlgorithm extends Constr
     
     /**
      * Builds the vector of partitions of undefined (not known if satisfied or unsatisfied) soft literals for
-     * the objective functions, used by minimal correction subset based algorithms. If stratification is
-     * disabled, a single partition is returned.
+     * the objective functions, used by minimal correction subset based algorithms.
+     * If stratification is disabled, a single partition is returned.
      * @return The vector of partitions of undefined soft literals.
      */
     protected IVec<IVecInt> buildUndefFormulas() {
-        return stratify ? buildUndefFormulas_stratified() : buildUndefFormulas_unstratified();
+        if (stratify) {
+            if (this.undef_partitions == null) {
+                this.undef_partitions = new Vec<IVec<IVecInt>>();
+                this.selection_probs = new Vec<Double>();
+                initStratified(this.obj_functions, this.undef_partitions, this.selection_probs);
+                assert(MathUtils.sum(this.selection_probs) == 1.0);
+            }
+            return buildUndefFormulas_stratified(this.undef_partitions, this.selection_probs);
+        }
+        return buildUndefFormulas_unstratified(this.obj_functions);
+    }
+    
+    /**
+     * Builds the vector of partitions of undefined (not known if satisfied or unsatisfied) soft literals for
+     * the objective functions, used by minimal correction subset based algorithms, for a given set of
+     * objective functions. If stratification is disabled, a single partition is returned.
+     * @param objs The objective functions.
+     * @return The vector of partitions of undefined soft literals.
+     */
+    protected IVec<IVecInt> buildUndefFormulas(IVec<IVec<ObjectiveFunction>> objs) {
+        if (stratify) {
+            IVec<IVec<IVecInt>> undef_parts = new Vec<IVec<IVecInt>>();
+            IVec<Double> sel_probs = new Vec<Double>();
+            initStratified(objs, undef_parts, sel_probs);
+            assert(MathUtils.sum(sel_probs) == 1.0);
+            return buildUndefFormulas_stratified(undef_parts, sel_probs);
+        }
+        return buildUndefFormulas_unstratified(objs);
     }
 
     /**
      * Builds the unstratified vector of partitions of undefined (not known if satisfied or unsatisfied)
-     * soft literals for the objective functions, used by minimal correction subset based algorithms.
-     * A single partition is returned.
+     * soft literals for the objective functions, used by minimal correction subset based algorithms, for a
+     * given set of objective functions. A single partition is returned.
+     * @param objs The objective functions.
      * @return A single partition of undefined soft literals.
      */
-    private IVec<IVecInt> buildUndefFormulas_unstratified() {
+    private IVec<IVecInt> buildUndefFormulas_unstratified(IVec<IVec<ObjectiveFunction>> objs) {
         IVecInt undef_fmls = new VecInt();
-        for (int i = 0; i < this.obj_functions.size(); ++i) {
-            for (int k = 0; k < this.obj_functions.get(i).size(); ++k) {
-                ObjectiveFunction function = this.obj_functions.get(i).get(k);
+        for (int i = 0; i < objs.size(); ++i) {
+            for (int k = 0; k < objs.get(i).size(); ++k) {
+                ObjectiveFunction function = objs.get(i).get(k);
                 IVecInt lits = function.getLits();
                 IVec<BigDecimal> coeffs = function.getCoeffs();
                 for (int j = 0; j < lits.size(); ++j) {
@@ -706,19 +734,18 @@ public abstract class MultiObjectiveConstraintBasedAllocAlgorithm extends Constr
 
     /**
      * Builds the stratified vector of partitions of undefined (not known if satisfied or unsatisfied)
-     * soft literals for the objective functions, used by minimal correction subset based algorithms.
+     * soft literals for the objective functions, used by minimal correction subset based algorithms, for a
+     * given set of objective functions.
+     * @param objs The objective functions.
+     * @param sel_probs A vector with the selection probabilities for each objective function.
      * @return The vector of partitions of undefined soft literals.
      */
-    private IVec<IVecInt> buildUndefFormulas_stratified() {
-        if (this.undef_partitions == null) {
-            initStratified();
-            assert(MathUtils.sum(this.selection_probs) == 1.0);
-        }
+    private IVec<IVecInt> buildUndefFormulas_stratified(IVec<IVec<IVecInt>> undef_parts, IVec<Double> sel_probs) {
         IVec<IVecInt> undef_fmls = new Vec<IVecInt>();
         IVec<IVec<IVecInt>> part_stacks = new Vec<IVec<IVecInt>>();
-        double[] part_probs = CollectionUtils.unwrapDoubleVec(this.selection_probs);
-        for (int i = 0; i < this.undef_partitions.size(); ++i) {
-            IVec<IVecInt> partition = this.undef_partitions.get(i);
+        double[] part_probs = CollectionUtils.unwrapDoubleVec(sel_probs);
+        for (int i = 0; i < undef_parts.size(); ++i) {
+            IVec<IVecInt> partition = undef_parts.get(i);
             IVec<IVecInt> part_stack = new Vec<IVecInt>();
             for (int j = partition.size()-1; j >= 0; --j) {
                 part_stack.push(partition.get(j));
@@ -728,11 +755,13 @@ public abstract class MultiObjectiveConstraintBasedAllocAlgorithm extends Constr
         while (part_stacks.size() > 0) {
             int idx = MathUtils.rouletteWheelSelection(part_probs);
             IVec<IVecInt> part_stack = part_stacks.get(idx);
-            IVecInt part = new VecInt();
-            part_stack.last().copyTo(part);
-            undef_fmls.push(part);
-            part_stack.pop();
-            if (part_stack.size() == 0) {
+            if (!part_stack.isEmpty()) {            // this is the case if no partitions exist for some objective
+                IVecInt part = new VecInt();        // may occur particularly during smart improvement
+                part_stack.last().copyTo(part);
+                undef_fmls.push(part);
+                part_stack.pop();
+            }
+            if (part_stack.isEmpty()) {
                 part_stacks.set(idx, part_stacks.last());
                 part_probs[idx] = part_probs[part_stacks.size()-1];     // FIXME: probability array is larger
                 part_probs[part_stacks.size()-1] = 0;                   // than necessary due to trailing 0s;
@@ -745,33 +774,36 @@ public abstract class MultiObjectiveConstraintBasedAllocAlgorithm extends Constr
     }
     
     /**
-     * Initializes stratification by partitioning the objective functions and assigning selection
-     * probabilities.
+     * Initializes stratification by partitioning a given set of objective functions and assigning selection
+     * probabilities to each function.
+     * @param objs The objective functions.
+     * @param undef_parts An output vector used to store the partitions for each objective function.
+     * @param sel_probs An output vector used to store the selection probabilities for each objective
+     * functions.
      */
-    private void initStratified() {
-        this.undef_partitions = new Vec<IVec<IVecInt>>();
-        this.selection_probs = new Vec<Double>();
-        for (int i = 0; i < this.obj_functions.size(); ++i) {
+    private void initStratified(
+            IVec<IVec<ObjectiveFunction>> objs, IVec<IVec<IVecInt>> undef_parts, IVec<Double> sel_probs) {
+        for (int i = 0; i < objs.size(); ++i) {
             if (this.merged_stratify) {
-                mergedStratify(this.obj_functions, i);
+                mergedStratify(objs, i, undef_parts, sel_probs);
             }
             else {
-                splitStratify(this.obj_functions, i);
+                splitStratify(objs, i, undef_parts, sel_probs);
             }
         }
-        logPartitions();
+        logPartitions(undef_parts);
     }
     
     /**
      * Logs the partition sizes for each objective function.
+     * @param undef_parts The vector of partitions.
      */
-    private void logPartitions() {
-        for (int i = 0; i < this.undef_partitions.size(); ++i) {
-            IVec<IVecInt> obj_parts = this.undef_partitions.get(i);
+    private void logPartitions(IVec<IVec<IVecInt>> undef_parts) {
+        for (int i = 0; i < undef_parts.size(); ++i) {
+            IVec<IVecInt> obj_parts = undef_parts.get(i);
             for (int j = 0; j < obj_parts.size(); ++j) {
                 IVecInt sub_obj_part = obj_parts.get(j);
-                System.out.println("c :obj-idx " + i + " :part-idx " + j +
-                                   " :part-size " + sub_obj_part.size());
+                System.out.println("c :obj-idx " + i + " :part-idx " + j + " :part-size " + sub_obj_part.size());
             }
         }
     }
@@ -781,14 +813,18 @@ public abstract class MultiObjectiveConstraintBasedAllocAlgorithm extends Constr
      * one.
      * @param objs The objective functions.
      * @param idx The index to the set of objectives to be stratified.
+     * @param undef_parts An output vector used to store the partitions for each objective function.
+     * @param sel_probs An output vector used to store the selection probabilities for each objective
+     * functions.
      */
-    private void mergedStratify(IVec<IVec<ObjectiveFunction>> objs, int idx) {
+    private void mergedStratify(
+            IVec<IVec<ObjectiveFunction>> objs, int idx, IVec<IVec<IVecInt>> undef_parts, IVec<Double> sel_probs) {
         IVec<WeightedLit> weighted_lits = new Vec<WeightedLit>();
         for (int i = 0; i < objs.get(idx).size(); ++i) {
             objs.get(idx).get(i).asWeightedLits().copyTo(weighted_lits);
         }
-        this.undef_partitions.push(partition(weighted_lits));
-        this.selection_probs.push(new Double((double)1/this.obj_functions.size()));
+        undef_parts.push(partition(weighted_lits));
+        sel_probs.push(new Double((double)1/objs.size()));
     }
     
     /**
@@ -796,11 +832,15 @@ public abstract class MultiObjectiveConstraintBasedAllocAlgorithm extends Constr
      * of the original objective among them.
      * @param objs The objective functions.
      * @param idx The index to the set of objectives to be stratified.
+     * @param undef_parts An output vector used to store the partitions for each objective function.
+     * @param sel_probs An output vector used to store the selection probabilities for each objective
+     * functions.
      */
-    private void splitStratify(IVec<IVec<ObjectiveFunction>> objs, int idx) {
+    private void splitStratify(
+            IVec<IVec<ObjectiveFunction>> objs, int idx, IVec<IVec<IVecInt>> undef_parts, IVec<Double> sel_probs) {
         for (int i = 0; i < objs.get(idx).size(); ++i) {
-            this.undef_partitions.push(partition(objs.get(idx).get(i).asWeightedLits()));
-            this.selection_probs.push(new Double((double)1/(objs.size()*objs.get(idx).size())));
+            undef_parts.push(partition(objs.get(idx).get(i).asWeightedLits()));
+            sel_probs.push(new Double((double)1/(objs.size()*objs.get(idx).size())));
         }
     }
     
@@ -1154,10 +1194,11 @@ public abstract class MultiObjectiveConstraintBasedAllocAlgorithm extends Constr
      * Dumps the VMC instance to a given file as a Multi-Objective Combinatorial Optimization problem in
      * OPB format.
      * @param path The file's path.
+     * @param allow_decimals True if decimal coefficients are allowed in the OPB file, false otherwise.
      */
     // FIXME: as is, it's safer to dump and solve on separate runs
-    public void dumpMOCO(String path) {
-        OPBPrinter printer = new OPBPrinter();
+    public void dumpMOCO(String path, boolean allow_decimals) {
+        OPBPrinter printer = new OPBPrinter(allow_decimals);
         try {
             addVMCConstraints(printer);
         }

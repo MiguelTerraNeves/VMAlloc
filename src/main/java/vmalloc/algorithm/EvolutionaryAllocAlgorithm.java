@@ -27,10 +27,7 @@ import java.util.LinkedList;
 import java.util.List;
 
 import org.moeaframework.Executor;
-import org.moeaframework.Instrumenter;
-import org.moeaframework.analysis.collector.Accumulator;
-import org.moeaframework.analysis.collector.AttachPoint;
-import org.moeaframework.analysis.collector.Collector;
+import org.moeaframework.algorithm.PeriodicAction;
 import org.moeaframework.core.Algorithm;
 import org.moeaframework.core.Initialization;
 import org.moeaframework.core.NondominatedPopulation;
@@ -39,9 +36,11 @@ import org.moeaframework.core.Solution;
 import org.moeaframework.core.operator.RandomInitialization;
 import org.moeaframework.core.spi.OperatorFactory;
 
+import vmalloc.Clock;
 import vmalloc.algorithm.evolutionary.BinPackingInitialization;
 import vmalloc.algorithm.evolutionary.RandomBinPackingInitialization;
 import vmalloc.algorithm.evolutionary.SVUMProvider;
+import vmalloc.algorithm.evolutionary.SmartMutationProvider;
 import vmalloc.algorithm.evolutionary.VMCwMProblem;
 import vmalloc.exception.NotSupportedException;
 
@@ -90,40 +89,69 @@ public abstract class EvolutionaryAllocAlgorithm extends AllocAlgorithm {
     }
     
     /**
-     * Collector class that can be used in the instrumentation of algorithms in order to collect the
-     * solutions computed throughout their execution.
+     * Periodic action that collects the current set of feasible solutions in some evolutionary algorithm's
+     * population and, optionally, logs them into a file.
      * @author Miguel Terra-Neves
      */
-    private class SolutionCollector implements Collector {
-        
-        /**
-         * The MOEA Framework algorithm object.
-         */
-        private final Algorithm algorithm;
+    private class SolutionCollector extends PeriodicAction {
 
         /**
-         * Creates an instance of a best objective cost collector.
-         * @param algorithm The MOEA Framework algorithm object.
+         * Creates an instance of a solution collector.
+         * @param algorithm The evolutionary algorithm to be instrumented with the collector.
+         * @param frequency The frequency of solution collection measured in iterations of the evolutionary
+         * algorithm.
          */
-        public SolutionCollector(Algorithm algorithm) {
-            super();
-            this.algorithm = algorithm;
+        public SolutionCollector(Algorithm algorithm, int frequency) {
+            super(algorithm, frequency, FrequencyType.STEPS);
         }
 
-        public Collector attach(Object obj) { return new SolutionCollector((Algorithm)obj); }
-
-        public void collect(Accumulator acc) {
-            NondominatedPopulation result = algorithm.getResult();
+        @Override
+        public void doAction() {
+            NondominatedPopulation pop = getResult();
             solutions.clear();
-            for (int i = 0; i < result.size(); ++i) {
-                saveSolution(result.get(i), true, true);
+            for (int i = 0; i < pop.size(); ++i) {
+                saveSolution(pop.get(i), true, true);
             }
             logProgress();
         }
+        
+    }
+    
+    /**
+     * Periodic action that logs the number of feasible solutions in some evolutionary algorithm's
+     * population.
+     * @author Miguel Terra-Neves
+     */
+    private class FeasibleCountLogger extends PeriodicAction {
 
-        public AttachPoint getAttachPoint() {
-            return AttachPoint.isSubclass(Algorithm.class).and(
-                    AttachPoint.not(AttachPoint.isNestedIn(Algorithm.class)));
+        /**
+         * Stores the number of feasible solutions counted in the last execution of {@link #doAction()}.
+         */
+        int last_count = -1;
+        
+        /**
+         * Creates an instance of the feasible solution count logger.
+         * @param algorithm The evolutionary algorithm to be instrumented with the collector.
+         * @param frequency The frequency of solution collection measured in iterations of the evolutionary
+         * algorithm.
+         */
+        public FeasibleCountLogger(Algorithm algorithm, int frequency) {
+            super(algorithm, frequency, FrequencyType.STEPS);
+        }
+
+        @Override
+        public void doAction() {
+            NondominatedPopulation pop = getResult();
+            int feasible = 0;
+            for (int i = 0; i < pop.size(); ++i) {
+                if (!pop.get(i).violatesConstraints()) { ++feasible; }
+            }
+            if (last_count != feasible || this.iteration % 1000 == 0) {     // prevent excessive logging
+                System.out.println("c :iteration " + this.iteration +
+                                   " :elapsed-time " + Clock.getInstance().getElapsed() +
+                                   " :nfeasible " + feasible);
+            }
+            this.last_count = feasible;
         }
         
     }
@@ -158,19 +186,17 @@ public abstract class EvolutionaryAllocAlgorithm extends AllocAlgorithm {
         this.exec = new Executor();
         this.algorithm = algorithm;
         OperatorFactory.getInstance().addProvider(new SVUMProvider());
+        OperatorFactory.getInstance().addProvider(new SmartMutationProvider());
     }
     
     /**
-     * Instruments an executor with the best objective cost collector.
-     * @param exec The executor.
-     * @return The instrumented executor.
-     * @see SolutionCollector
+     * Instruments a given evolutionary algorithm with a solution collector and feasible solution counter.
+     * @param alg The algorithm to be instrumented.
+     * @return The instrumented algorithm.
      */
-    protected Executor instrumentExecutor(Executor exec, VMCwMProblem instance) {
-        Instrumenter instrumenter = new Instrumenter().withProblem(instance)
-                                                      .withFrequency(1)
-                                                      .attach(new SolutionCollector(null));
-        return exec.withInstrumenter(instrumenter);
+    // TODO: configurable frequencies?
+    protected Algorithm decorateWithPeriodicActions(Algorithm alg) {
+        return new FeasibleCountLogger(new SolutionCollector(alg, 1), 1);
     }
     
     /**
@@ -180,8 +206,7 @@ public abstract class EvolutionaryAllocAlgorithm extends AllocAlgorithm {
      * @return The set-up executor.
      */
     private Executor setUpExecutor(Executor exec, String alg, VMCwMProblem instance) {
-        exec = exec.withAlgorithm(alg).withProblem(instance);
-        return instrumentExecutor(exec, instance);
+        return exec.withAlgorithm(alg).withProblem(instance);
     }
     
     /**
@@ -274,9 +299,9 @@ public abstract class EvolutionaryAllocAlgorithm extends AllocAlgorithm {
     }
     
     /**
-     * Removes solutions that violate constraints from a given population.
+     * Cleans up a given population by removing unfeasible solutions.
      * @param pop The population.
-     * @return The population that results from removing unfeasible solutions from {@code pop}.
+     * @return The cleaned population.
      */
     protected NondominatedPopulation cleanUpPopulation(NondominatedPopulation pop) {
         NondominatedPopulation new_pop = new NondominatedPopulation();
@@ -290,9 +315,9 @@ public abstract class EvolutionaryAllocAlgorithm extends AllocAlgorithm {
     }
     
     /**
-     * Removes solutions that violate constraints from a given list of populations.
-     * @param pops The population list.
-     * @return The populations that result from removing unfeasible solutions from the ones in {@code pop}.
+     * Cleans up a set of populations by removing unfeasible solutions.
+     * @param pops The list of populations.
+     * @return The list of cleaned populations.
      */
     protected List<NondominatedPopulation> cleanUpPopulations(List<NondominatedPopulation> pops) {
         List<NondominatedPopulation> new_pops = new LinkedList<NondominatedPopulation>();

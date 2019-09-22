@@ -1252,7 +1252,8 @@ public class GGAAlloc extends EvolutionaryAllocAlgorithm {
                 Initialization initialization = makeInitializer(problem, pop_size);
                 double mutation_rate = typed_props.getDouble("gga.mutationRate", 0.0);
                 double crossover_rate = typed_props.getDouble("gga.crossoverRate", 0.8);
-                return new GGA(problem, population, mutation_rate, crossover_rate, initialization);
+                return decorateWithPeriodicActions(
+                        new GGA(problem, population, mutation_rate, crossover_rate, initialization));
             }
             return null;
         }

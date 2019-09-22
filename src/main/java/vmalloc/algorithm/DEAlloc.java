@@ -77,7 +77,8 @@ public class DEAlloc extends EvolutionaryAllocAlgorithm {
                 DifferentialEvolutionVariation variation = 
                         (DifferentialEvolutionVariation)OperatorFactory.getInstance().getVariation(
                                 "de", properties, problem);
-                return new GDE3(problem, population, comparator, selection, variation, initialization);
+                return decorateWithPeriodicActions(
+                        new GDE3(problem, population, comparator, selection, variation, initialization));
             }
             return null;
         }

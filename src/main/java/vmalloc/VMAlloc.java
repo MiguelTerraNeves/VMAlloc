@@ -24,7 +24,6 @@ package vmalloc;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 
@@ -36,14 +35,12 @@ import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 import org.apache.commons.io.FileUtils;
 import org.moeaframework.analysis.sensitivity.ResultFileReader;
-import org.moeaframework.core.FrameworkException;
 import org.moeaframework.core.NondominatedPopulation;
-import org.moeaframework.core.Population;
-import org.moeaframework.core.Settings;
-import org.moeaframework.core.Solution;
 import org.moeaframework.core.spi.ProblemFactory;
-import org.moeaframework.util.ReferenceSetMerger;
 import org.sat4j.specs.IVec;
+
+import com.google.common.collect.ArrayListMultimap;
+import com.google.common.collect.Multimap;
 
 import vmalloc.algorithm.AllocAlgorithm;
 import vmalloc.algorithm.BBOAlloc;
@@ -76,9 +73,6 @@ import vmalloc.exception.HeuristicReductionFailedException;
 import vmalloc.preprocess.HeuristicReducer;
 import vmalloc.utils.IOUtils;
 import vmalloc.utils.MiscUtils;
-
-import com.google.common.collect.ArrayListMultimap;
-import com.google.common.collect.Multimap;
 
 /**
  * Application's main class.
@@ -159,7 +153,7 @@ public class VMAlloc {
     /**
      * Default literals to distinct weights ratio for stratification in MCS based algorithms.
      */
-    private static final String DEFAULT_LIT_WEIGHT_RATIO = "2.0";
+    private static final String DEFAULT_LIT_WEIGHT_RATIO = "15.0";
     
     /**
      * String representation of the random population initialization operator.
@@ -198,6 +192,12 @@ public class VMAlloc {
     private static final String SPLIT_STRAT = "SPLIT";
     
     /**
+     * Default maximum number of conflicts allowed in the stratified Pareto-MCS algorithm before merging
+     * some partition with the next one.
+     */
+    private static final String DEFAULT_PART_MAX_CONFLICTS = "200000";
+    
+    /**
      * Default population size.
      */
     private static final String DEFAULT_POPSIZE = "100";
@@ -231,6 +231,16 @@ public class VMAlloc {
      * Default cross-archipelago migration rate for biogeography-based optimization.
      */
     private static final String DEFAULT_BBO_CROSS_MIGRATION_RATE = "0.5";
+    
+    /**
+     * Default smart mutation rate for evolutionary algorithms.
+     */
+    private static final String DEFAULT_SMART_MUTATION_RATE = "0.0";
+    
+    /**
+     * Default fraction of servers to be displaced in smart improvement for evolutionary algorithms.
+     */
+    private static final String DEFAULT_SMART_IMPROVEMENT_RELAX_RATE = "0.2";
     
     /**
      * Default crossover rate for the genetic algorithm.
@@ -293,6 +303,15 @@ public class VMAlloc {
     }
     
     /**
+     * Prints a help message to standard output and exits.
+     * @param options An object that represents the application's options.
+     */
+    private static void printHelpMessageAndExit(Options options) {
+        printHelpMessage(options);
+        System.exit(0);
+    }
+    
+    /**
      * Discards the platform constraints from a set of a jobs. Platform constraints are the ones where some
      * virtual machines are allowed to run only in a subset of the physical machines.
      * @param jobs The jobs.
@@ -348,64 +367,8 @@ public class VMAlloc {
             String label = label_fpath_pair[0], path = label_fpath_pair[1];
             dataset.put(label, path);
         }
-        // Build reference set
-        ReferenceSetMerger merger = new ReferenceSetMerger();
-        for (Iterator<String> it = dataset.keySet().iterator(); it.hasNext();) {
-            String label = it.next();
-            Iterator<String> path_it = dataset.get(label).iterator();
-            for (int i = 0; path_it.hasNext();) {
-                String path = path_it.next();
-                ResultFileReader reader = new ResultFileReader(instance, new File(path));
-                try {
-                    for (; reader.hasNext(); ++i) {
-                        NondominatedPopulation pop = reader.next().getPopulation();
-                        Population ref_pop = new Population();
-                        for (int j = 0; j < pop.size(); ++j) {
-                            Solution sol = pop.get(j);
-                            instance.evaluate(sol);
-                            if (!sol.violatesConstraints()) {
-                                instance.normalize(sol);
-                                ref_pop.add(sol);
-                            }
-                        }
-                        merger.add(label + "_seed" + i, ref_pop);
-                    }
-                }
-                catch (FrameworkException fe) {     // FIXME: replace with more useful exception class
-                    throw new RuntimeException("error reading population from " + path, fe);
-                }
-                finally {
-                    reader.close();
-                }
-            }
-        }
-        // Sanity check in order to avoid errors in the MOEA Framework
-        NondominatedPopulation ref_set = merger.getCombinedPopulation();
-        boolean add_default = ref_set.size() <= 1;
-        for (int i = 0; i < instance.getNumberOfObjectives() && !add_default; ++i) {
-            double obj_val = ref_set.get(0).getObjective(i);
-            double obj_min = obj_val, obj_max = obj_val;
-            for (int j = 1; j < ref_set.size(); ++j) {
-                Solution sol = ref_set.get(j);
-                obj_min = Math.min(obj_min, sol.getObjective(i));
-                obj_max = Math.max(obj_max, sol.getObjective(i));
-            }
-            if (obj_max - obj_min < Settings.EPS) {     // error in IGD computation if an objective's range is
-                add_default = true;                     // empty; in that case, add default reference set
-            }
-        }
-        if (add_default) {
-            ref_set.addAll(instance.getNormalizedDefaultReferenceSet());
-        }
-        File ref_set_file = IOUtils.makeTemporaryFile("ref_set", ".pop", true);
-        instance.dumpReferenceSet(ref_set_file.getAbsolutePath(), ref_set);
-        // Do analysis
-        try {
-            instance.analyzePopulations(dataset, ref_set_file.getAbsolutePath());
-        }
-        catch (FrameworkException fe) {
-            throw new RuntimeException("Not possible to analyze populations for " + dataset_desc, fe);
-        }
+        // Analyze
+        instance.analyzePopulations(dataset);
     }
     
     /**
@@ -439,19 +402,281 @@ public class VMAlloc {
      * OPB format.
      * @param instance The VMC instance.
      * @param path The file's path.
+     * @param allow_decimals True if decimal coefficients are allowed in the OPB file, false otherwise.
      * @param ign_den Boolean indicating if denominators should be ignored.
      */
     // FIXME: requires a dummy instance of MultiObjectiveConstraintBasedAllocAlgorithm
-    private static void dumpMOCO(VMCwMProblem instance, String path, boolean ign_den) {
+    private static void dumpMOCO(VMCwMProblem instance, String path, boolean allow_decimals, boolean ign_den) {
         ParetoCLD printer = new ParetoCLD(instance);
-        if (ign_den) printer.ignoreDenominators();
-        printer.dumpMOCO(path);
+        if (ign_den) { printer.ignoreDenominators(); }
+        printer.dumpMOCO(path, allow_decimals);
+    }
+    
+    /**
+     * Set the population size of a given evolutionary algorithm.
+     * @param alloc The evolutionary algorithm.
+     * @param cl The command line object with the configuration parameters.
+     */
+    private static void setPopSize(EvolutionaryAllocAlgorithm alloc, CommandLine cl) {
+        int ps = Integer.parseInt(cl.getOptionValue("ps", DEFAULT_POPSIZE));
+        alloc.setPopulationSize(ps);
+        System.out.println("c  Population size:            " + ps);
+    }
+    
+    /**
+     * Set the population initialization type of a given evolutionary algorithm.
+     * @param alloc The evolutionary algorithm.
+     * @param cl The command line object with the configuration parameters.
+     * @param opts The object that represents the application's options.
+     */
+    private static void setPopInitType(EvolutionaryAllocAlgorithm alloc, CommandLine cl, Options opts) {
+        System.out.print("c  Initialization type:        ");
+        InitializationType init_type = InitializationType.RANDOM;
+        if (!cl.hasOption("it") || cl.getOptionValue("it").equals(RAND_INIT)) {
+            init_type = InitializationType.RANDOM;
+            System.out.print(RAND_INIT + IOUtils.NEW_LINE);
+        }
+        else if (cl.getOptionValue("it").equals(RAND_PACKING_INIT)) {
+            init_type = InitializationType.RANDOM_PACKING;
+            System.out.print(RAND_PACKING_INIT + IOUtils.NEW_LINE);
+        }
+        else if (cl.getOptionValue("it").equals(SHUFFLED_FIRST_FIT_INIT)) {
+            init_type = InitializationType.SHUFFLED_FIRST_FIT;
+            System.out.print(SHUFFLED_FIRST_FIT_INIT + IOUtils.NEW_LINE);
+        }
+        else if (cl.getOptionValue("it").equals(SHUFFLED_VMCWM_INIT)) {
+            init_type = InitializationType.SHUFFLED_VMCWM_HEURISTIC;
+            System.out.print(SHUFFLED_VMCWM_INIT + IOUtils.NEW_LINE);
+        }
+        else if (cl.getOptionValue("it").equals(MIXED_INIT)) {
+            init_type = InitializationType.MIXED;
+            System.out.print(MIXED_INIT + IOUtils.NEW_LINE);
+        }
+        else {
+            printHelpMessageAndExit(opts);
+        }
+        alloc.setInitializationType(init_type);
+    }
+    
+    /**
+     * Builds an instance of the MOEA/D algorithm based on the command line configuration.
+     * @param cl The command line object with the configuration parameters.
+     * @param opts The object that represents the application's options.
+     * @param instance The instance of the Virtual Machine Consolidation problem.
+     * @return An instance of the MOEA/D algorithm.
+     */
+    // FIXME: smart improve params identical to NSGAII; refactor
+    private static MOEADAlloc buildMOEAD(CommandLine cl, Options opts, VMCwMProblem instance) {
+        MOEADAlloc alloc = new MOEADAlloc(instance);
+        System.out.println("c =========== MOEAD Configuration ==========");
+        double mr = Double.parseDouble(cl.getOptionValue("mr", DEFAULT_MOEAD_MUTATION_RATE));
+        double smr = Double.parseDouble(cl.getOptionValue("smr", DEFAULT_SMART_MUTATION_RATE));
+        double cr = Double.parseDouble(cl.getOptionValue("cr", DEFAULT_MOEAD_CROSSOVER_RATE));
+        double ns = Double.parseDouble(cl.getOptionValue("ns", DEFAULT_MOEAD_NEIGHBORHOOD_SIZE));
+        double delta = Double.parseDouble(cl.getOptionValue("delta", DEFAULT_MOEAD_DELTA));
+        double eta = Double.parseDouble(cl.getOptionValue("eta", DEFAULT_MOEAD_ETA));
+        alloc.setMutationRate(mr);
+        alloc.setSmartMutationRate(smr);
+        alloc.setCrossoverRate(cr);
+        alloc.setNeighborhoodSize(ns);
+        alloc.setDelta(delta);
+        alloc.setEta(eta);
+        System.out.println("c  Crossover rate:             " + cr);
+        System.out.println("c  Mutation rate:              " + mr);
+        System.out.println("c  Smart mutation:");
+        System.out.println("c      rate:                   " + smr);
+        if (cl.hasOption("mc")) {
+            long max_conflicts = Long.parseLong(cl.getOptionValue("mc"));
+            alloc.setMaxConflicts(max_conflicts);
+            System.out.println("c      max conflicts:          " + max_conflicts);
+        }
+        else {
+            System.out.println("c      max conflicts:          disabled");
+        }
+        if (cl.hasOption("ddu")) {
+            alloc.disableDomainBasedUnfixing();
+            System.out.println("c      domain unfixing:        disabled");
+        }
+        else {
+            System.out.println("c      domain unfixing:        enabled");
+        }
+        if (cl.hasOption("si")) {
+            double irr = Double.parseDouble(cl.getOptionValue("irr", DEFAULT_SMART_IMPROVEMENT_RELAX_RATE));
+            double lwr = Double.parseDouble(cl.getOptionValue("lwr", DEFAULT_LIT_WEIGHT_RATIO));
+            long pmc = Long.parseLong(cl.getOptionValue("pmc", DEFAULT_PART_MAX_CONFLICTS));
+            alloc.enableSmartImprovement();
+            alloc.setImprovementPartMaxConflicts(pmc);
+            alloc.setImprovementRelaxRate(irr);
+            alloc.setLitWeightRatio(lwr);
+            System.out.println("c      smart improve:          enabled");
+            System.out.println("c      literal-weight ratio:   " + lwr);
+            System.out.println("c      improve relax rate:     " + irr);
+            if (cl.hasOption("imc")) {
+                long improve_max_conflicts = Long.parseLong(cl.getOptionValue("imc"));
+                alloc.setImprovementMaxConflicts(improve_max_conflicts);
+                System.out.println("c      improve max conflicts:  " + improve_max_conflicts);
+            }
+            else {
+                System.out.println("c      improve max conflicts:  disabled");
+            }
+            System.out.println("c      part max conflicts:     " + pmc);
+        }
+        else {
+            System.out.println("c      smart improve:          disabled");
+        }
+        System.out.println("c  Neighborhood size:          " + ns);
+        System.out.println("c  Delta:                      " + delta);
+        System.out.println("c  Eta:                        " + eta);
+        setPopSize(alloc, cl);
+        setPopInitType(alloc, cl, opts);
+        System.out.println("c ==========================================");
+        return alloc;
+    }
+    
+    /**
+     * Builds an instance of the GDE3 algorithm based on the command line configuration.
+     * @param cl The command line object with the configuration parameters.
+     * @param opts The object that represents the application's options.
+     * @param instance The instance of the Virtual Machine Consolidation problem.
+     * @return An instance of the GDE3 algorithm.
+     */
+    private static DEAlloc buildDE(CommandLine cl, Options opts, VMCwMProblem instance) {
+        DEAlloc alloc = new DEAlloc(instance);
+        double cr = Double.parseDouble(cl.getOptionValue("cr", DEFAULT_DE_CROSSOVER_RATE));
+        double ss = Double.parseDouble(cl.getOptionValue("ss", DEFAULT_DE_STEP_SIZE));
+        alloc.setCrossoverRate(cr);
+        alloc.setStepSize(ss);
+        System.out.println("c ============ DE Configuration ============");
+        System.out.println("c  Crossover rate:             " + cr);
+        System.out.println("c  Step size:                  " + ss);
+        setPopSize(alloc, cl);
+        setPopInitType(alloc, cl, opts);
+        System.out.println("c ==========================================");
+        return alloc;
+    }
+    
+    /**
+     * Builds an instance of the VMPMBBO algorithm based on the command line configuration.
+     * @param cl The command line object with the configuration parameters.
+     * @param opts The object that represents the application's options.
+     * @param instance The instance of the Virtual Machine Consolidation problem.
+     * @return An instance of the VMPMBBO algorithm.
+     */
+    private static BBOAlloc buildBBO(CommandLine cl, Options opts, VMCwMProblem instance) {
+        BBOAlloc alloc = new BBOAlloc(instance);
+        System.out.println("c ============ BBO Configuration ===========");
+        double mr = Double.parseDouble(cl.getOptionValue("mr", DEFAULT_BBO_MUTATION_RATE));
+        double ir = Double.parseDouble(cl.getOptionValue("ir", DEFAULT_BBO_IMMIGRATION_RATE));
+        double cmr = Double.parseDouble(cl.getOptionValue("cmr", DEFAULT_BBO_CROSS_MIGRATION_RATE));
+        int ps = Integer.parseInt(cl.getOptionValue("ps", DEFAULT_BBO_POPSIZE));
+        alloc.setMutationRate(mr);
+        alloc.setImmigrationRate(ir);
+        alloc.setCrossSystemMigrationRate(cmr);
+        alloc.setPopulationSize(ps);
+        System.out.println("c  Immigration rate:           " + ir);
+        System.out.println("c  Mutation rate:              " + mr);
+        System.out.println("c  Cross migration rate:       " + cmr);
+        // FIXME: needs to be corrected if BBO implementation changes
+        System.out.println("c  Number of subsystems:       " + ((instance.getMappings().size() > 0) ? "6" : "4"));
+        System.out.println("c  Population size:            " + ps);
+        setPopInitType(alloc, cl, opts);
+        System.out.println("c ==========================================");
+        return alloc;
+    }
+    
+    /**
+     * Builds an instance of the NSGAII algorithm based on the command line configuration.
+     * @param cl The command line object with the configuration parameters.
+     * @param opts The object that represents the application's options.
+     * @param instance The instance of the Virtual Machine Consolidation problem.
+     * @return An instance of the NSGAII algorithm.
+     */
+    // FIXME: smart improve params identical to MOEA/D; refactor
+    private static GAAlloc buildGA(CommandLine cl, Options opts, VMCwMProblem instance) {
+        GAAlloc alloc = new GAAlloc(instance);
+        double mr = Double.parseDouble(cl.getOptionValue("mr", DEFAULT_GA_MUTATION_RATE));
+        double cr = Double.parseDouble(cl.getOptionValue("cr", DEFAULT_GA_CROSSOVER_RATE));
+        double smr = Double.parseDouble(cl.getOptionValue("smr", DEFAULT_SMART_MUTATION_RATE));
+        alloc.setMutationRate(mr);
+        alloc.setCrossoverRate(cr);
+        alloc.setSmartMutationRate(smr);
+        System.out.println("c ============ GA Configuration ============");
+        System.out.println("c  Crossover rate:             " + cr);
+        System.out.println("c  Mutation rate:              " + mr);
+        System.out.println("c  Smart mutation:");
+        System.out.println("c      rate:                   " + smr);
+        if (cl.hasOption("mc")) {
+            long max_conflicts = Long.parseLong(cl.getOptionValue("mc"));
+            alloc.setMaxConflicts(max_conflicts);
+            System.out.println("c      max conflicts:          " + max_conflicts);
+        }
+        else {
+            System.out.println("c      max conflicts:          disabled");
+        }
+        if (cl.hasOption("ddu")) {
+            alloc.disableDomainBasedUnfixing();
+            System.out.println("c      domain unfixing:        disabled");
+        }
+        else {
+            System.out.println("c      domain unfixing:        enabled");
+        }
+        if (cl.hasOption("si")) {
+            double irr = Double.parseDouble(cl.getOptionValue("irr", DEFAULT_SMART_IMPROVEMENT_RELAX_RATE));
+            double lwr = Double.parseDouble(cl.getOptionValue("lwr", DEFAULT_LIT_WEIGHT_RATIO));
+            long pmc = Long.parseLong(cl.getOptionValue("pmc", DEFAULT_PART_MAX_CONFLICTS));
+            alloc.enableSmartImprovement();
+            alloc.setImprovementPartMaxConflicts(pmc);
+            alloc.setImprovementRelaxRate(irr);
+            alloc.setLitWeightRatio(lwr);
+            System.out.println("c      smart improve:          enabled");
+            System.out.println("c      literal-weight ratio:   " + lwr);
+            System.out.println("c      improve relax rate:     " + irr);
+            if (cl.hasOption("imc")) {
+                long improve_max_conflicts = Long.parseLong(cl.getOptionValue("imc"));
+                alloc.setImprovementMaxConflicts(improve_max_conflicts);
+                System.out.println("c      improve max conflicts:  " + improve_max_conflicts);
+            }
+            else {
+                System.out.println("c      improve max conflicts:  disabled");
+            }
+            System.out.println("c      part max conflicts:     " + pmc);
+        }
+        else {
+            System.out.println("c      smart improve:          disabled");
+        }
+        setPopSize(alloc, cl);
+        setPopInitType(alloc, cl, opts);
+        System.out.println("c ==========================================");
+        return alloc;
+    }
+    
+    /**
+     * Builds an instance of the MGGA algorithm based on the command line configuration.
+     * @param cl The command line object with the configuration parameters.
+     * @param opts The object that represents the application's options.
+     * @param instance The instance of the Virtual Machine Consolidation problem.
+     * @return An instance of the MGGA algorithm.
+     */
+    private static GGAAlloc buildGGA(CommandLine cl, Options opts, VMCwMProblem instance) {
+        GGAAlloc alloc = new GGAAlloc(instance);
+        double mr = Double.parseDouble(cl.getOptionValue("mr", DEFAULT_GGA_MUTATION_RATE));
+        double cr = Double.parseDouble(cl.getOptionValue("cr", DEFAULT_GGA_CROSSOVER_RATE));
+        alloc.setMutationRate(mr);
+        alloc.setCrossoverRate(cr);
+        System.out.println("c ============ GGA Configuration ===========");
+        System.out.println("c  Crossover rate:             " + cr);
+        System.out.println("c  Mutation rate:              " + mr);
+        setPopSize(alloc, cl);
+        setPopInitType(alloc, cl, opts);
+        System.out.println("c ==========================================");
+        return alloc;
     }
     
     /**
      * The application's entry point.
      * @param args The command line arguments.
      */
+    // TODO: refactor instantiation of constraint-based algorithms
     public static void main(String[] args) {
         Clock.getInstance().reset();
         System.out.println("c Parsing");
@@ -493,6 +718,9 @@ public class VMAlloc {
                           "Enables stratification with the given strategy for handling division reduction. " +
                           "Options are merging reduced objectives (" + MERGED_STRAT + ") and probability " +
                           "splitting (" + SPLIT_STRAT + "). Supported by " + PARETO_CLD + ".");
+        options.addOption("pmc", "part-max-conflicts", true,
+                          "Set the maximum number of conflicts allowed per partition for stratitifed MCS " +
+                          "algorithms. Default is " + DEFAULT_PART_MAX_CONFLICTS + ".");
         options.addOption("lwr", "literal-weight-ratio", true,
                           "Sets the literals to distinct weights ratio for stratification.");
         options.addOption("pn", "partition-number", true,
@@ -511,6 +739,8 @@ public class VMAlloc {
                           "This option exists mostly for evaluation purposes.");
         options.addOption("dm", "dump-moco", true,
                           "Dump the instance encoded in multi-objective OPB format.");
+        options.addOption("ad", "allow-decimals", false,
+                          "Allow decimal coefficients when dumping instance to multi-objective OPB format.");
         options.addOption("ap", "analyze-populations", true,
                           "Enables analysis of sets of populations stored in files generated using " +
                           "the 'dp' option instead of computing an allocation. The population " +
@@ -545,6 +775,22 @@ public class VMAlloc {
                           "mutation and the default values are " + DEFAULT_BBO_MUTATION_RATE + ", " +
                           DEFAULT_MOEAD_MUTATION_RATE + " and " + DEFAULT_GA_MUTATION_RATE + " respectively. " +
                           GGA + " uses group mutation and the default value is " + DEFAULT_GGA_MUTATION_RATE + ".");
+        options.addOption("smr", "smart-mutation-rate", true,
+                          "Set the smart mutation rate for the " + MOEAD + " and " + GA + " algorithm. " +
+                          "Default is " + DEFAULT_SMART_MUTATION_RATE + ".");
+        options.addOption("mc", "max-conflicts", true,
+                          "Set the maximum number of conflicts allowed for smart mutation. Disabled by default.");
+        options.addOption("ddu", "disable-domain-unfixing", false,
+                          "Disable domain-based variable unfixing in smart mutation.");
+        options.addOption("si", "smart-improvement", false,
+                          "Enables smart improvement when attempting to fix an already feasible solution during" +
+                          "smart mutation.");
+        options.addOption("irr", "improve-relax-rate", true,
+                          "Set the relaxation rate for smart improvement. Default is " +
+                          DEFAULT_SMART_IMPROVEMENT_RELAX_RATE + ".");
+        options.addOption("imc", "improve-max-conflicts", true,
+                          "Set the maximum number of conflicts allowed per partition for smart improvement " +
+                          "(smart improvement uses the stratified ParetoCLD algorithm). Disabled by default.");
         options.addOption("ir", "immigration-rate", true,
                           "Set the immigration rate for the " + BBO + " algorithm. Default is " +
                           DEFAULT_BBO_IMMIGRATION_RATE + ".");
@@ -593,7 +839,7 @@ public class VMAlloc {
                 instance_provider.discardDenominators();
             }
             if (cl.hasOption("dm")) {
-                dumpMOCO(instance, cl.getOptionValue("dm"), cl.hasOption("ida"));
+                dumpMOCO(instance, cl.getOptionValue("dm"), cl.hasOption("ad"), cl.hasOption("ida"));
                 return;
             }
             if (cl.hasOption("r")) {
@@ -692,6 +938,7 @@ public class VMAlloc {
                         else {
                             System.out.println("c  Stratification:        disabled");
                         }
+                        // TODO: set partition max conflicts
                     }
                     else if (cl.getOptionValue("a").equals(PARETO_LBX)) {
                         mo_alloc = new ParetoLBX(instance);
@@ -727,123 +974,23 @@ public class VMAlloc {
                 System.out.println("c ====================================");
                 alloc = cb_alloc;
             }
+            else if (cl.getOptionValue("a").equals(DE)) {
+                alloc = buildDE(cl, options, instance);
+            }
+            else if (cl.getOptionValue("a").equals(BBO)) {
+                alloc = buildBBO(cl, options, instance);
+            }
+            else if (cl.getOptionValue("a").equals(MOEAD)) {
+                alloc = buildMOEAD(cl, options, instance);
+            }
+            else if (cl.getOptionValue("a").equals(GA)) {
+                alloc = buildGA(cl, options, instance);
+            }
+            else if (cl.getOptionValue("a").equals(GGA)) {
+                alloc = buildGGA(cl, options, instance);
+            }
             else {
-                // Evolutionary approaches
-                EvolutionaryAllocAlgorithm ea_alloc = null;
-                if (cl.getOptionValue("a").equals(DE)) {
-                    DEAlloc de_alloc = new DEAlloc(instance);
-                    double cr = Double.parseDouble(cl.getOptionValue("cr", DEFAULT_DE_CROSSOVER_RATE));
-                    double ss = Double.parseDouble(cl.getOptionValue("ss", DEFAULT_DE_STEP_SIZE));
-                    de_alloc.setCrossoverRate(cr);
-                    de_alloc.setStepSize(ss);
-                    ea_alloc = de_alloc;
-                    System.out.println("c ========= DE Configuration =========");
-                    System.out.println("c  Crossover rate:       " + cr);
-                    System.out.println("c  Step size:            " + ss);
-                }
-                else if (cl.getOptionValue("a").equals(BBO)) {
-                    BBOAlloc bbo_alloc = new BBOAlloc(instance);
-                    System.out.println("c ========= BBO Configuration ========");
-                    double mr = Double.parseDouble(cl.getOptionValue("mr", DEFAULT_BBO_MUTATION_RATE));
-                    double ir = Double.parseDouble(
-                            cl.getOptionValue("ir", DEFAULT_BBO_IMMIGRATION_RATE));
-                    double cmr = Double.parseDouble(
-                            cl.getOptionValue("cmr", DEFAULT_BBO_CROSS_MIGRATION_RATE));
-                    bbo_alloc.setMutationRate(mr);
-                    bbo_alloc.setImmigrationRate(ir);
-                    bbo_alloc.setCrossSystemMigrationRate(cmr);
-                    ea_alloc = bbo_alloc;
-                    System.out.println("c  Immigration rate:     " + ir);
-                    System.out.println("c  Mutation rate:        " + mr);
-                    System.out.println("c  Cross migration rate: " + cmr);
-                    // FIXME: needs to be corrected if BBO implementation changes
-                    System.out.println("c  Number of subsystems: " + ((mappings.size() > 0) ? "6" : "4"));
-                }
-                else if (cl.getOptionValue("a").equals(MOEAD)) {
-                    MOEADAlloc moead_alloc = new MOEADAlloc(instance);
-                    System.out.println("c ======== MOEAD Configuration =======");
-                    double mr = Double.parseDouble(cl.getOptionValue("mr", DEFAULT_MOEAD_MUTATION_RATE));
-                    double cr = Double.parseDouble(cl.getOptionValue("cr", DEFAULT_MOEAD_CROSSOVER_RATE));
-                    double ns = Double.parseDouble(cl.getOptionValue("ns", DEFAULT_MOEAD_NEIGHBORHOOD_SIZE));
-                    double delta = Double.parseDouble(cl.getOptionValue("delta", DEFAULT_MOEAD_DELTA));
-                    double eta = Double.parseDouble(cl.getOptionValue("eta", DEFAULT_MOEAD_ETA));
-                    moead_alloc.setMutationRate(mr);
-                    moead_alloc.setCrossoverRate(cr);
-                    moead_alloc.setNeighborhoodSize(ns);
-                    moead_alloc.setDelta(delta);
-                    moead_alloc.setEta(eta);
-                    System.out.println("c  Crossover rate:       " + cr);
-                    System.out.println("c  Mutation rate:        " + mr);
-                    System.out.println("c  Neighborhood size:    " + ns);
-                    System.out.println("c  Delta:                " + delta);
-                    System.out.println("c  Eta:                  " + eta);
-                    ea_alloc = moead_alloc;
-                }
-                else if (cl.getOptionValue("a").equals(GA)) {
-                    GAAlloc ga_alloc = new GAAlloc(instance);
-                    double mr = Double.parseDouble(cl.getOptionValue("mr", DEFAULT_GA_MUTATION_RATE));
-                    double cr = Double.parseDouble(cl.getOptionValue("cr", DEFAULT_GA_CROSSOVER_RATE));
-                    ga_alloc.setMutationRate(mr);
-                    ga_alloc.setCrossoverRate(cr);
-                    System.out.println("c ========= GA Configuration =========");
-                    System.out.println("c  Crossover rate:       " + cr);
-                    System.out.println("c  Mutation rate:        " + mr);
-                    ea_alloc = ga_alloc;
-                }
-                else if (cl.getOptionValue("a").equals(GGA)) {
-                    GGAAlloc gga_alloc = new GGAAlloc(instance);
-                    double mr = Double.parseDouble(cl.getOptionValue("mr", DEFAULT_GGA_MUTATION_RATE));
-                    double cr = Double.parseDouble(cl.getOptionValue("cr", DEFAULT_GGA_CROSSOVER_RATE));
-                    gga_alloc.setMutationRate(mr);
-                    gga_alloc.setCrossoverRate(cr);
-                    ea_alloc = gga_alloc;
-                    System.out.println("c ========= GGA Configuration ========");
-                    System.out.println("c  Crossover rate:       " + cr);
-                    System.out.println("c  Mutation rate:        " + mr);
-                }
-                else {
-                    printHelpMessage(options);
-                    return;
-                }
-                String default_pop_size = null;
-                if (cl.getOptionValue("a").equals(BBO)) {
-                    default_pop_size = DEFAULT_BBO_POPSIZE;
-                }
-                else {
-                    default_pop_size = DEFAULT_POPSIZE;
-                }
-                int ps = Integer.parseInt(cl.getOptionValue("ps", default_pop_size));
-                ea_alloc.setPopulationSize(ps);
-                System.out.println("c  Population size:      " + ps);
-                System.out.print("c  Initialization type:  ");
-                InitializationType init_type;
-                if (!cl.hasOption("it") || cl.getOptionValue("it").equals(RAND_INIT)) {
-                    init_type = InitializationType.RANDOM;
-                    System.out.print(RAND_INIT + IOUtils.NEW_LINE);
-                }
-                else if (cl.getOptionValue("it").equals(RAND_PACKING_INIT)) {
-                    init_type = InitializationType.RANDOM_PACKING;
-                    System.out.print(RAND_PACKING_INIT + IOUtils.NEW_LINE);
-                }
-                else if (cl.getOptionValue("it").equals(SHUFFLED_FIRST_FIT_INIT)) {
-                    init_type = InitializationType.SHUFFLED_FIRST_FIT;
-                    System.out.print(SHUFFLED_FIRST_FIT_INIT + IOUtils.NEW_LINE);
-                }
-                else if (cl.getOptionValue("it").equals(SHUFFLED_VMCWM_INIT)) {
-                    init_type = InitializationType.SHUFFLED_VMCWM_HEURISTIC;
-                    System.out.print(SHUFFLED_VMCWM_INIT + IOUtils.NEW_LINE);
-                }
-                else if (cl.getOptionValue("it").equals(MIXED_INIT)) {
-                    init_type = InitializationType.MIXED;
-                    System.out.print(MIXED_INIT + IOUtils.NEW_LINE);
-                }
-                else {
-                    printHelpMessage(options);
-                    return;
-                }
-                System.out.println("c ====================================");
-                ea_alloc.setInitializationType(init_type);
-                alloc = ea_alloc;
+                printHelpMessageAndExit(options);
             }
             if (cl.hasOption("lp")) {
                 System.out.println("c Logging progress to " + cl.getOptionValue("lp"));

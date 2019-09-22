@@ -436,13 +436,23 @@ public abstract class ConstraintBasedAllocAlgorithm extends AllocAlgorithm {
                     anti_coloc_vm_vars.push(job_vars.get(i).get(j));
                 }
             }
-            for (int j = 0; j < pms.size(); ++j) {
-                IVecInt cons_vars = new VecInt();
-                for (int k = 0; k < anti_coloc_vm_vars.size(); ++k) {
-                    cons_vars.push(anti_coloc_vm_vars.get(k).get(j));
-                }
-                if (cons_vars.size() > 1) {
+            if (anti_coloc_vm_vars.size() > 1) {
+                for (int j = 0; j < pms.size(); ++j) {
+                    IVecInt cons_vars = new VecInt();
+                    for (int k = 0; k < anti_coloc_vm_vars.size(); ++k) {
+                        cons_vars.push(anti_coloc_vm_vars.get(k).get(j));
+                    }
                     aggr.addAtMost(cons_vars, 1);
+                    /*if (anti_coloc_vm_vars.size() < 10) {       // do pairwise encoding if small number of VMs
+                        for (int k = 0; k < cons_vars.size()-1; ++k) {
+                            for (int l = k+1; l < cons_vars.size(); ++l) {
+                                aggr.addClause(new VecInt(new int[] { -cons_vars.get(k), -cons_vars.get(l) }));
+                            }
+                        }
+                    }
+                    else {
+                        aggr.addAtMost(cons_vars, 1);
+                    }*/
                 }
             }
         }
@@ -742,7 +752,8 @@ public abstract class ConstraintBasedAllocAlgorithm extends AllocAlgorithm {
                         }
                     }
                     int activator = newVar(solver);
-                    addVecToVec(solver.addRemovableXOR(bit_lits, alpha_0 != key_bit, activator), ids);
+                    //addVecToVec(solver.addRemovableXOR(bit_lits, alpha_0 != key_bit, activator), ids);
+                    ids.push(solver.addRemovableXOR(bit_lits, alpha_0 != key_bit, activator));
                     asms.push(activator);
                 }
                 done = true;
@@ -792,7 +803,7 @@ public abstract class ConstraintBasedAllocAlgorithm extends AllocAlgorithm {
      * {@link ConstraintSolver#isSatisfiable()} returned true.
      * @param solver The constraint solver.
      * @param undef_fmls The vector of literals.
-     * @return A vector with the subsets of literals satisfied by the solver's current model.
+     * @return A vector with the subset of literals satisfied by the solver's current model.
      */
     protected IVecInt extractSatisfied(ConstraintSolver solver, IVecInt undef_fmls) {
         assert(solver.isSolved() && solver.isSatisfiable());
@@ -802,7 +813,31 @@ public abstract class ConstraintBasedAllocAlgorithm extends AllocAlgorithm {
             if (    (undef_fmls.get(i) < 0 && !solver.modelValue(-undef_fmls.get(i)) ||
                     (undef_fmls.get(i) > 0 && solver.modelValue(undef_fmls.get(i))))) {
                 sat.push(undef_fmls.get(i));
-                undef_fmls.set(i, undef_fmls.get(undef_fmls.size()-1));
+                undef_fmls.set(i, undef_fmls.last());
+                undef_fmls.pop();
+            }
+            else {
+                i++;
+            }
+        }
+        return sat;
+    }
+    
+    /**
+     * Retrieves the subset of literals, from a vector, satisfied by a given model.
+     * @param model The model.
+     * @param undef_fmls The vector of literals.
+     * @return A vector with the subset of literals satisfied by the solver's current model.
+     */
+    // FIXME: very similar to extractSatisfied(ConstraintSolver, IVecInt)
+    protected IVecInt extractSatisfied(boolean[] model, IVecInt undef_fmls) {
+        IVecInt sat = new VecInt();
+        int i = 0;
+        while (i < undef_fmls.size()) {
+            int l = undef_fmls.get(i);
+            if ((l < 0 && !model[-l-1]) || (l > 0 && model[l-1])) {
+                sat.push(l);
+                undef_fmls.set(i, undef_fmls.last());
                 undef_fmls.pop();
             }
             else {
@@ -929,6 +964,35 @@ public abstract class ConstraintBasedAllocAlgorithm extends AllocAlgorithm {
                                            JobVec jobs,
                                            IVec<IVec<IVecInt>> job_vars) {
         return modelToAllocationForVMs(solver, pms, jobs.flattenJobs(), flattenJobVars(job_vars));
+    }
+    
+    /**
+     * Prevents a constraint solver from producing its current model in the future. Exploits domain knowledge
+     * of the Virtual Machine Consolidation problem.
+     * @param solver The constraint solver.
+     * @param job_vars A vector of vectors of vectors of Boolean variables, as produced by
+     * {@link #newVarsForJobs(ConstraintSolver, PhysicalMachineVec, JobVec)}. The value of the {@code i}-th
+     * variable in the {@code j}-th sub-vector in the {@code k}-th vector indicates if the {@code j}-th
+     * virtual machine in the {@code k}-th job in {@code jobs} is mapped to the {@code i}-th physical
+     * machine in {@code pms}.
+     * @throws ContradictionException If the constraint solver detects that the addition of the blocking
+     * constraints would result in a contradiction.
+     */
+    protected void blockSolution(ConstraintSolver solver, IVec<IVec<IVecInt>> job_vars)
+            throws ContradictionException {
+        IVecInt or_lits = new VecInt();
+        for (int i = 0; i < job_vars.size(); ++i) {
+            for (int j = 0; j < job_vars.get(i).size(); ++j) {
+                IVecInt vm_vars = job_vars.get(i).get(j);
+                for (int k = 0; k < vm_vars.size(); ++k) {
+                    if (solver.modelValue(vm_vars.get(k))) {
+                        or_lits.push(-vm_vars.get(k));
+                        break;
+                    }
+                }
+            }
+        }
+        solver.addClause(or_lits);
     }
 
     /**

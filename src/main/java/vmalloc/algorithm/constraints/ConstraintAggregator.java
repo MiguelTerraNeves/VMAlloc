@@ -213,8 +213,9 @@ public abstract class ConstraintAggregator {
     
     /**
      * Auxiliary class used to store the result of applying a scaling factor to a set of
-     * non-integral coefficients and rhs of a Pseudo-Boolean constraint.
+     * non-integral coefficients and rhs of a Pseudo-Boolean constraint or expression.
      * @see ConstraintAggregator#scaleToInteger(IVec, BigDecimal)
+     * @see ConstraintAggregator#scaleToInteger(IVec)
      */
     protected class ScaledResult {
         
@@ -246,7 +247,8 @@ public abstract class ConstraintAggregator {
         IVec<BigInteger> getCoefficients() { return this.coeffs; }
         
         /**
-         * Retrieves the scaled right-hand side.
+         * Retrieves the scaled right-hand side. Returns {@code null} instead if there is no
+         * right-hand side.
          * @return The scaled right-hand side.
          */
         BigInteger getRightHandSide() { return this.rhs; }
@@ -254,21 +256,37 @@ public abstract class ConstraintAggregator {
     }
     
     /**
-     * Given a set of possible non-integral coefficients and the right-hand side of a
+     * Given a set of possible non-integral coefficients and, optionally, the right-hand side of a
      * Pseudo-Boolean constraint, converts those coefficients and right-hand side to integers in a
      * way that preserves the constraint's model set.
      * @param coeffs The coefficients to scale.
-     * @param rhs The right-hand side to scale.
+     * @param rhs The right-hand side to scale. Should be {@code null} in the case of
+     * Pseudo-Boolean expressions, which have no right-hand side.
      * @return A {@link ScaledResult} object with the scaled integer coefficients and right-hand
      * side.
      */
     protected ScaledResult scaleToInteger(IVec<BigDecimal> coeffs, BigDecimal rhs) {
-        coeffs.push(rhs);
+        if (rhs != null) {
+            coeffs.push(rhs);
+        }
         IVec<BigInteger> scaled_coeffs = MathUtils.scaleToInteger(coeffs);
-        BigInteger scaled_rhs = scaled_coeffs.last();
-        coeffs.pop();
-        scaled_coeffs.pop();
+        BigInteger scaled_rhs = null;
+        if (rhs != null) {
+            scaled_rhs = scaled_coeffs.last();
+            coeffs.pop();
+            scaled_coeffs.pop();
+        }
         return new ScaledResult(scaled_coeffs, scaled_rhs);
+    }
+    
+    /**
+     * Given a set of possible non-integral coefficients of a Pseudo-Boolean expression, converts
+     * those coefficients to integers
+     * @param coeffs The coefficients to scale.
+     * @return A {@link ScaledResult} object with scaled integer coefficients.
+     */
+    protected ScaledResult scaleToInteger(IVec<BigDecimal> coeffs) {
+        return scaleToInteger(coeffs, null);
     }
     
 }

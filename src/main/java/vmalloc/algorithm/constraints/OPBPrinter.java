@@ -85,6 +85,22 @@ public class OPBPrinter extends ConstraintAggregator {
     private StringWriter obj_writer = new StringWriter();
     
     /**
+     * Indicates if the printed instance is allowed to have decimal coefficients.
+     */
+    private boolean allow_decimals = false;
+    
+    /**
+     * Creates an instance of an OPB format printer that forces all coefficients to be integer.
+     */
+    public OPBPrinter() {}
+    
+    /**
+     * Creates an instance of an OPB format printer.
+     * @param allow_decimals True if the instance is allowed to have decimal coefficients, false otherwise.
+     */
+    public OPBPrinter(boolean allow_decimals) { this.allow_decimals = allow_decimals; }
+    
+    /**
      * Converts a literal to its string representation.
      * @param lit The literal.
      * @return The string representation of literal {@code lit}.
@@ -100,7 +116,6 @@ public class OPBPrinter extends ConstraintAggregator {
      * @param op The relation operator if a constraint (like "=" or ">="), null otherwise.
      * @param term True if the line should be terminated with ';\n', false otherwise.
      */
-    // TODO: add option to scale to integer
     private void writePseudoBoolean(Writer writer,
                                     IVecInt lits,
                                     IVec<BigDecimal> coeffs,
@@ -110,13 +125,34 @@ public class OPBPrinter extends ConstraintAggregator {
         assert(lits.size() == coeffs.size());
         assert(op == null || op.equals(GREATER_OR_EQUAL) || op.equals(EQUAL));
         try {
-            for (int i = 0; i < lits.size(); ++i) {
-                BigDecimal coeff = coeffs.get(i).setScale(DECIMAL_SCALE, RoundingMode.HALF_EVEN).stripTrailingZeros();
-                writer.write(coeff.toPlainString() + " " + litToString(lits.get(i)) + " ");
-            }
+            BigDecimal lim_scale_rhs = null;
             if (op != null) {
-                rhs = rhs.setScale(DECIMAL_SCALE, RoundingMode.HALF_EVEN).stripTrailingZeros();
-                writer.write(op + " " + rhs.toPlainString());
+                lim_scale_rhs = rhs.setScale(DECIMAL_SCALE, RoundingMode.HALF_EVEN).stripTrailingZeros();
+            }
+            IVec<BigDecimal> lim_scale_coeffs = new Vec<BigDecimal>(coeffs.size());
+            for (int i = 0; i < coeffs.size(); ++i) {
+                lim_scale_coeffs.unsafePush(
+                        coeffs.get(i).setScale(DECIMAL_SCALE, RoundingMode.HALF_EVEN).stripTrailingZeros());
+            }
+            if (this.allow_decimals) {
+                for (int i = 0; i < lits.size(); ++i) {
+                    BigDecimal coeff = lim_scale_coeffs.get(i);
+                    writer.write(coeff.toPlainString() + " " + litToString(lits.get(i)) + " ");
+                }
+                if (op != null) {
+                    writer.write(op + " " + lim_scale_rhs.toPlainString());
+                }
+            }
+            else {
+                ScaledResult scaled = scaleToInteger(lim_scale_coeffs, lim_scale_rhs);
+                IVec<BigInteger> int_coeffs = scaled.getCoefficients();
+                for (int i = 0; i < lits.size(); ++i) {
+                    BigInteger coeff = int_coeffs.get(i);
+                    writer.write(coeff + " " + litToString(lits.get(i)) + " ");
+                }
+                if (op != null) {
+                    writer.write(op + " " + scaled.getRightHandSide());
+                }
             }
             writer.write(term ? ";\n" : "");
         }

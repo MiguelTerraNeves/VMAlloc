@@ -41,6 +41,7 @@ import org.moeaframework.core.spi.OperatorFactory;
 import org.moeaframework.util.TypedProperties;
 
 import vmalloc.algorithm.evolutionary.SVUM;
+import vmalloc.algorithm.evolutionary.SmartMutation;
 import vmalloc.algorithm.evolutionary.VMCwMProblem;
 
 /**
@@ -78,8 +79,9 @@ public class GAAlloc extends EvolutionaryAllocAlgorithm {
                 TournamentSelection selection =
                         new TournamentSelection(2, new ChainedComparator(new ParetoDominanceComparator(),
                                                                          new CrowdingComparator()));
-                Variation variation = OperatorFactory.getInstance().getVariation("ux+svum", properties, problem);
-                return new NSGAII(problem, population, null, selection, variation, initialization);
+                Variation variation = OperatorFactory.getInstance().getVariation("ux+svum+sm", properties, problem);
+                return decorateWithPeriodicActions(
+                        new NSGAII(problem, population, null, selection, variation, initialization));
             }
             return null;
         }
@@ -100,13 +102,77 @@ public class GAAlloc extends EvolutionaryAllocAlgorithm {
      * Sets the uniform crossover rate to be used by the algorithm.
      * @param rate The crossover rate.
      */
-    public void setCrossoverRate(double rate) { exec = exec.withProperty("ux.rate", rate); }
+    public void setCrossoverRate(double rate) { this.exec = this.exec.withProperty("ux.rate", rate); }
     
     /**
      * Sets the single value uniform mutation rate to be used by the algorithm.
      * @param rate The mutation rate.
      * @see SVUM
      */
-    public void setMutationRate(double rate) { exec = exec.withProperty("svum.rate", rate); }
+    public void setMutationRate(double rate) { this.exec = this.exec.withProperty("svum.rate", rate); }
+
+    /**
+     * Set the smart mutation rate to be used by the algorithm.
+     * @param rate The smart mutation rate.
+     * @see SmartMutation
+     */
+    public void setSmartMutationRate(double rate) { this.exec = this.exec.withProperty("sm.rate", rate); }
+    
+    /**
+     * Set the maximum number of conflicts for smart mutation.
+     * @param max_conflicts The maximum number of conflicts.
+     * @see SmartMutation
+     */
+    public void setMaxConflicts(long max_conflicts) {
+        this.exec = this.exec.withProperty("sm.maxConflicts", max_conflicts);
+    }
+    
+    /**
+     * Disables exploitation of domain knowledge when deciding which variables to be unassigned before
+     * applying smart mutation.
+     * @see SmartMutation
+     */
+    public void disableDomainBasedUnfixing() { this.exec = this.exec.withProperty("sm.domainUnfix", false); }
+
+    /**
+     * Enables application of smart improvement when a given solution is already feasible.
+     * @see SmartMutation
+     */
+    public void enableSmartImprovement() { this.exec = this.exec.withProperty("sm.improve", true); }
+    
+    /**
+     * Set the maximum number of conflicts for smart improvement.
+     * @param max_conflicts The maximum number of conflicts.
+     * @see SmartMutation
+     */
+    public void setImprovementMaxConflicts(long max_conflicts) {
+        this.exec = this.exec.withProperty("sm.improve.maxConflicts", max_conflicts);
+    }
+    
+    /**
+     * Smart improvement applies the stratified Pareto-MCS algorithm. This method sets the number of
+     * conflicts allowed before merging some partition with the next one.
+     * @param max_conflicts The maximum number of conflicts before merging.
+     * @see SmartMutation
+     */
+    public void setImprovementPartMaxConflicts(long max_conflicts) {
+        this.exec = this.exec.withProperty("sm.improve.partMaxConflicts", max_conflicts);
+    }
+    
+    /**
+     * Set the fraction of servers to be displaced before applying smart improvement.
+     * @param rate The displacement fraction.
+     * @see SmartMutation
+     */
+    public void setImprovementRelaxRate(double rate) {
+        this.exec = this.exec.withProperty("sm.improve.relaxRate", rate);
+    }
+    
+    /**
+     * Sets the literal-weight ratio for the stratified Pareto-MCS algorithm.
+     * @param ratio The literal-weight ratio.
+     * @see ParetoCLD
+     */
+    public void setLitWeightRatio(double ratio) { this.exec = this.exec.withProperty("sm.improve.lwr", ratio); }
 
 }

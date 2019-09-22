@@ -25,6 +25,8 @@ package vmalloc.utils;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
+import java.util.Iterator;
+import java.util.List;
 
 import org.moeaframework.core.PRNG;
 import org.sat4j.core.Vec;
@@ -34,6 +36,8 @@ import org.sat4j.specs.IVec;
  * Class with several static utility methods for mathematical operations.
  * @author Miguel Terra-Neves
  */
+// TODO: configurable BigDecimal scale for divisions
+// TODO: fixed scale for all BigDecimals
 public class MathUtils {
 
     /**
@@ -177,8 +181,13 @@ public class MathUtils {
      * @param vec The vector.
      * @return The sum of the values in {@code vec}.
      */
+    // FIXME: similar to sum(double[])
     public static double sum(IVec<Double> vec) {
-        return sum(vec.toArray());
+        double sum = 0.0;
+        for (int i = 0; i < vec.size(); ++i) {
+            sum += vec.get(i);
+        }
+        return sum;
     }
     
     /**
@@ -228,6 +237,17 @@ public class MathUtils {
         for (int i = 0; i < vec.size(); ++i) {
             sum = sum.add(vec.get(i));
         }
+        return sum;
+    }
+    
+    /**
+     * Calculates the sum of the big decimals in a list.
+     * @param list The list.
+     * @return The sum of the values in {@code list}.
+     */
+    public static BigDecimal bigDecimalListSum(List<BigDecimal> list) {
+        BigDecimal sum = BigDecimal.ZERO;
+        for (Iterator<BigDecimal> it = list.iterator(); it.hasNext(); sum = sum.add(it.next()));
         return sum;
     }
     
@@ -296,7 +316,8 @@ public class MathUtils {
     public static IVec<BigInteger> scaleToInteger(IVec<BigDecimal> vals) {
         int factor = 0;
         for (int i = 0; i < vals.size(); ++i) {
-            int scale = vals.get(i).scale();
+            BigDecimal stripped = vals.get(i).stripTrailingZeros();
+            int scale = stripped.scale();
             factor = (scale > factor) ? scale : factor;
         }
         IVec<BigInteger> scaled = new Vec<BigInteger>();

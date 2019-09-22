@@ -7,8 +7,9 @@ VMC instances in the format accepted by VMAlloc can be found
 VMAlloc contains implementations of the algorithms and techniques proposed in our
 [SAT'17](https://link.springer.com/chapter/10.1007/978-3-319-66263-3_13),
 [AAAI'18](https://www.aaai.org/ocs/index.php/AAAI/AAAI18/paper/download/17227/16245),
-[IJCAI'18](https://www.ijcai.org/proceedings/2018/0191.pdf) and
-[Heuristics'18](https://link.springer.com/article/10.1007/s10732-018-9400-2) papers.
+[IJCAI'18](https://www.ijcai.org/proceedings/2018/0191.pdf),
+[Heuristics'18](https://link.springer.com/article/10.1007/s10732-018-9400-2) and
+[IJCAI'19](https://www.ijcai.org/proceedings/2019/0165.pdf) papers.
 It also includes implementations of all the algorithms used in those papers' experimental
 evaluations, such as [VMPMBBO](https://www.sciencedirect.com/science/article/pii/S0167739X15000564).
 
@@ -237,6 +238,21 @@ Add the **-ida** and **-ide** options to run the SAT'17 version:
 
 ```
 java -server -jar vmalloc.jar -ip -ida -ide -a GA -it SFF -ps 100 -cr 0.8 -mr 0.05 -t <time limit> -m <migration budget percentile> -dp <solution set file path> <instance file path>
+```
+
+### Smart Operators
+
+MOEA/D and NSGAII support the smart operators proposed in our IJCAI'19 paper.
+To enable just smart mutation with the same configuration used in our paper, add the following options:
+
+```
+-smr 0.01 -mc 20000
+```
+
+To also enable smart improvement, add the following options:
+
+```
+-smr 0.01 -mc 20000 -si -irr 0.2 -imc 500000 -pmc 20000
 ```
 
 ## Performance Analysis

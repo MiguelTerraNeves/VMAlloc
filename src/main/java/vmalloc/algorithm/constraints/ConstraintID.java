@@ -27,7 +27,8 @@ import java.math.BigInteger;
 /**
  * An identifier for constraints added to constraint solvers. Some constraint solvers support
  * constraint removal. These solvers return a {@code ConstraintID} object when adding a removable
- * constraint, that can then be used to remove it.
+ * constraint, that can then be used to remove it. Constraint ids can also be used as timestamps, since
+ * these can be compared and are created in increasing order by {@link #makeFresh()}.
  * @author Miguel Terra-Neves
  */
 public class ConstraintID implements Comparable<ConstraintID> {

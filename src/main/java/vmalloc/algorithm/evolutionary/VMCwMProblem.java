@@ -37,12 +37,15 @@ import org.moeaframework.Analyzer;
 import org.moeaframework.analysis.sensitivity.ResultFileReader;
 import org.moeaframework.core.FrameworkException;
 import org.moeaframework.core.NondominatedPopulation;
+import org.moeaframework.core.Population;
 import org.moeaframework.core.PopulationIO;
+import org.moeaframework.core.Settings;
 import org.moeaframework.core.Solution;
 import org.moeaframework.core.Variable;
 import org.moeaframework.core.variable.BinaryVariable;
 import org.moeaframework.core.variable.EncodingUtils;
 import org.moeaframework.problem.AbstractProblem;
+import org.moeaframework.util.ReferenceSetMerger;
 import org.sat4j.core.Vec;
 import org.sat4j.specs.IVec;
 
@@ -61,6 +64,7 @@ import vmalloc.domain.VirtualMachine;
 import vmalloc.domain.VirtualMachineVec;
 import vmalloc.exception.InvalidEncodingException;
 import vmalloc.utils.CollectionUtils;
+import vmalloc.utils.IOUtils;
 
 /**
  * The {@link VMCwMProblem} class extends the {@link AbstractProblem} class, which is mandatory in order to
@@ -996,39 +1000,178 @@ public class VMCwMProblem extends AbstractProblem {
     /**
      * Performs statistical analysis on the solution sets stored in a set of files. The files may be
      * solution sets produced by different algorithms. The result of the analysis is printed to the console,
-     * which includes inverted generational distance, hypervolume, epsilon-indicator, spacing and
-     * statistical significance.
+     * which includes inverted generational distance, hypervolume, epsilon-indicator, spacing and statistical
+     * significance.
      * @param dataset A mapping of labels (usually algorithm names) to file paths. These files are expected
      * to be in the MOEA Framework format, as produced by
-     * @param ref_set_path Path to the file with the reference set to use for inverted generational distance
-     * and epsilon-indicator computation. Must be normalized.
      * {@link #dumpPopulation(String, NondominatedPopulation)} and {@link #dumpPopulations(String, List)}.
      * @throws IOException If an error occurs reading from the files.
      */
-    public void analyzePopulations(Multimap<String, String> dataset, String ref_set_path)
-            throws IOException {
+    public void analyzePopulations(Multimap<String, String> dataset) throws IOException {
         VariableEncoding enc_tmp = this.encoding;
         setEncoding(DEFAULT_ENCODING);
-        if (getNumberOfObjectives() > 2) {
-            System.out.println("c reference point: e " + getMaxEnergyConsumption() +
-                               " w " + getMaxResourceWastage() + " m " + getMaxMigrationCost());
+        NondominatedPopulation ref_set = buildReferenceSet(dataset);
+        Solution nadir = getNadirPoint(ref_set), ideal = getIdealPoint(ref_set);
+        Solution ref_point = computeRefPoint(ref_set, nadir);
+        sanitizeRefSet(ref_set, nadir, ideal, ref_point);
+        Analyzer analyzer = buildAnalyzer(dataset, ref_set, ideal, ref_point);
+        analyzer.printAnalysis();
+        this.encoding = enc_tmp;
+    }
+    
+    /**
+     * Builds the reference set to be used in inverted generational distance and epsilon-indicator
+     * computation for a given dataset.
+     * @param dataset A mapping of labels (usually algorithm names) to file paths. These files are expected
+     * to be in the MOEA Framework format, as produced by
+     * {@link #dumpPopulation(String, NondominatedPopulation)} and {@link #dumpPopulations(String, List)}.
+     * @return The reference set.
+     * @throws IOException If an error occurs reading from the files.
+     */
+    private NondominatedPopulation buildReferenceSet(Multimap<String, String> dataset) throws IOException {
+        ReferenceSetMerger merger = new ReferenceSetMerger();
+        for (Iterator<String> it = dataset.keySet().iterator(); it.hasNext();) {
+            String label = it.next();
+            Iterator<String> path_it = dataset.get(label).iterator();
+            for (int i = 0; path_it.hasNext();) {
+                String path = path_it.next();
+                ResultFileReader reader = new ResultFileReader(this, new File(path));
+                try {
+                    for (; reader.hasNext(); ++i) {
+                        NondominatedPopulation pop = reader.next().getPopulation();
+                        Population ref_pop = new Population();
+                        for (int j = 0; j < pop.size(); ++j) {
+                            Solution sol = pop.get(j);
+                            this.evaluate(sol);
+                            if (!sol.violatesConstraints()) {
+                                normalize(sol);
+                                ref_pop.add(sol);
+                            }
+                        }
+                        merger.add(label + "_seed" + i, ref_pop);
+                    }
+                }
+                catch (FrameworkException fe) {     // FIXME: replace with more useful exception class
+                    throw new RuntimeException("error reading population from " + path, fe);
+                }
+                finally {
+                    reader.close();
+                }
+            }
         }
-        else {
-            System.out.println("c reference point: e " + getMaxEnergyConsumption() +
-                               " w " + getMaxResourceWastage());
+        NondominatedPopulation ref_set = merger.getCombinedPopulation();
+        if (ref_set.isEmpty()) {                                    // necessary to prevent exception in
+            ref_set.addAll(getNormalizedDefaultReferenceSet());     // MOEA framework
         }
-        Analyzer analyzer = new Analyzer().withProblem(NAME)
-                                          .withReferencePoint(1.0, 1.0, 1.0)
-                                          .withIdealPoint(0.0, 0.0, 0.0)
-                                          .includeInvertedGenerationalDistance()
-                                          .includeHypervolume()
-                                          .includeSpacing()
-                                          .includeAdditiveEpsilonIndicator()
-                                          .showIndividualValues()
-                                          .showStatisticalSignificance();
-        if (ref_set_path != null) {
-            analyzer = analyzer.withReferenceSet(new File(ref_set_path));
+        return ref_set;
+    }
+    
+    /**
+     * Computes a reference point for hypervolume computation based on some reference set and the respective
+     * nadir point.
+     * @param ref_set The reference set.
+     * @param nadir The nadir point.
+     * @return A solution representing the reference point.
+     */
+    private Solution computeRefPoint(NondominatedPopulation ref_set, Solution nadir) {
+        assert(!ref_set.isEmpty());
+        Solution ref_point = newSolution();
+        double r = 1.0 + 1.0 / Math.max(1.0,  ref_set.size()-1);
+        for (int i = 0; i < getNumberOfObjectives(); ++i) {
+            ref_point.setObjective(i, nadir.getObjective(i) * r);
         }
+        return ref_point;
+    }
+    
+    /**
+     * Computes the nadir point for a given reference set. The nadir point contains the worst possible values
+     * in the reference set for each cost function.
+     * @param ref_set The reference set.
+     * @return The nadir point.
+     */
+    private Solution getNadirPoint(NondominatedPopulation ref_set) { return getPoint(ref_set, true); }
+    
+    /**
+     * Computes the ideal point for a given reference set. The ideal point constains the best possible values
+     * in the reference set for each cost function.
+     * @param ref_set The reference set.
+     * @return The ideal point.
+     */
+    private Solution getIdealPoint(NondominatedPopulation ref_set) { return getPoint(ref_set, false); }
+    
+    /**
+     * Computes either the nadir or the ideal point for a given reference set.
+     * @param ref_set The reference set.
+     * @param nadir True if the nadir point is to be computed, false if the ideal point is to be computed
+     * instead.
+     * @return The point.
+     */
+    private Solution getPoint(NondominatedPopulation ref_set, boolean nadir) {
+        assert(!ref_set.isEmpty());
+        Solution point = newSolution();
+        for (int i = 0; i < getNumberOfObjectives(); ++i) {
+            double val = ref_set.get(0).getObjective(i);
+            for (int j = 1; j < ref_set.size(); ++j) {
+                double j_val = ref_set.get(j).getObjective(i);
+                val = nadir ? Math.max(val, j_val) : Math.min(val, j_val);
+            }
+            point.setObjective(i, val);
+        }
+        return point;
+    }
+    
+    /**
+     * Cleans up the reference set in order to avoid possible error scenarios in the MOEA framework.
+     * @param ref_set The reference set.
+     * @param nadir The nadir point.
+     * @param ideal The ideal point.
+     * @param ref The clean reference set.
+     */
+    private void sanitizeRefSet(NondominatedPopulation ref_set, Solution nadir, Solution ideal, Solution ref) {
+        assert(!ref_set.isEmpty());
+        boolean single = ref_set.size() == 1;
+        for (int i = 0; i < getNumberOfObjectives(); ++i) {
+            if (single || nadir.getObjective(i) - ideal.getObjective(i) < Settings.EPS) {
+                Solution sol = ideal.copy();
+                sol.setObjective(i, ref.getObjective(i));
+                int j = (i +1) % getNumberOfObjectives();                   // this is required when the reference
+                sol.setObjective(j, sol.getObjective(j) - Settings.EPS);    // set has a single solution, or the
+                ref_set.add(sol);                                           // new point would be dominated by it
+            }
+        }
+    }
+    
+    /**
+     * Builds the MOEA framework analyzer for performing statistical analysis on the solution sets stored
+     * in a set of files.
+     * @param dataset A mapping of labels (usually algorithm names) to file paths. These files are expected
+     * to be in the MOEA Framework format, as produced by
+     * {@link #dumpPopulation(String, NondominatedPopulation)} and {@link #dumpPopulations(String, List)}.
+     * @param ref_set The reference set to use for inverted generational distance and epsilon-indicator
+     * computation.
+     * @param ideal The ideal point to use for normalization.
+     * @param ref The reference point to use for hypervolume computation.
+     * @return The analyzer object.
+     * @throws IOException If an error occurs reading from the files.
+     */
+    private Analyzer buildAnalyzer(Multimap<String, String> dataset,
+                                   NondominatedPopulation ref_set,
+                                   Solution ideal,
+                                   Solution ref)
+            throws IOException {
+        File ref_set_file = IOUtils.makeTemporaryFile("ref_set", ".pop", true);
+        dumpReferenceSet(ref_set_file.getAbsolutePath(), ref_set);
+        Analyzer analyzer = new Analyzer();
+        analyzer = analyzer.withProblem(NAME)
+                           .includeInvertedGenerationalDistance()
+                           .includeHypervolume()
+                           .includeSpacing()
+                           .includeAdditiveEpsilonIndicator()
+                           .withReferencePoint(ref.getObjectives())
+                           .withIdealPoint(ideal.getObjectives())
+                           .showIndividualValues()
+                           .showStatisticalSignificance()
+                           .withReferenceSet(ref_set_file);
         for (Iterator<String> it = dataset.keySet().iterator(); it.hasNext();) {
             String label = it.next();
             for (Iterator<String> path_it = dataset.get(label).iterator(); path_it.hasNext();) {
@@ -1057,21 +1200,7 @@ public class VMCwMProblem extends AbstractProblem {
                 }
             }
         }
-        analyzer.printAnalysis();
-        this.encoding = enc_tmp;
-    }
-    
-    /**
-     * Performs statistical analysis on the solution sets stored in a set of files. The files may be
-     * solution sets produced by different algorithms. The result of the analysis is printed to the console,
-     * which includes inverted generational distance, hypervolume and statistical significance.
-     * @param dataset A mapping of labels (usually algorithm names) to file paths. These files are expected
-     * to be in the MOEA Framework format, as produced by
-     * {@link #dumpPopulation(String, NondominatedPopulation)} and {@link #dumpPopulations(String, List)}.
-     * @throws IOException If an error occurs reading from the files.
-     */
-    public void analyzePopulations(Multimap<String, String> dataset) throws IOException {
-        analyzePopulations(dataset, null);
+        return analyzer;
     }
     
     /**

@@ -61,45 +61,17 @@ public class HashEnumAlloc extends ConstraintBasedAllocAlgorithm {
     }
     
     /**
-     * Prevents a constraint solver from producing its current model in the future. Exploits domain knowledge
-     * of the Virtual Machine Consolidation problem.
-     * @param solver The constraint solver.
-     * @param job_vars A vector of vectors of vectors of Boolean variables, as produced by
-     * {@link #newVarsForJobs(ConstraintSolver, PhysicalMachineVec, JobVec)}. The value of the {@code i}-th
-     * variable in the {@code j}-th sub-vector in the {@code k}-th vector indicates if the {@code j}-th
-     * virtual machine in the {@code k}-th job in {@code jobs} is mapped to the {@code i}-th physical
-     * machine in {@code pms}.
-     * @throws ContradictionException If the constraint solver detects that the addition of the blocking
-     * constraints would result in a contradiction.
-     */
-    private void blockSolution(ConstraintSolver solver, IVec<IVec<IVecInt>> job_vars)
-            throws ContradictionException {
-        IVecInt or_lits = new VecInt();
-        for (int i = 0; i < job_vars.size(); ++i) {
-            for (int j = 0; j < job_vars.get(i).size(); ++j) {
-                IVecInt vm_vars = job_vars.get(i).get(j);
-                for (int k = 0; k < vm_vars.size(); ++k) {
-                    if (solver.modelValue(vm_vars.get(k))) {
-                        or_lits.push(-vm_vars.get(k));
-                        break;
-                    }
-                }
-            }
-        }
-        solver.addClause(or_lits);
-    }
-    
-    /**
      * Adds an hash function to a constraint solver.
      * @param solver The constraint solver.
      * @return A vector of constraint IDs that must be removed in order to fully remove the hash function
      * from the solver.
      */
-    protected IVec<ConstraintID> setHashFunction(ConstraintSolver solver) {
+    // TODO: update docs
+    protected IVec<ConstraintID> setHashFunction(ConstraintSolver solver, IVecInt asms) {
         assert(hashFunctionsEnabled());
         System.out.println("c Setting hash function");
         IVecInt vars = flattenLitVectors(flattenJobVars(this.job_vars));
-        IVec<ConstraintID> ids = setHashFunction(solver, vars);
+        IVec<ConstraintID> ids = setHashFunction(solver, vars, asms);
         System.out.println("c Hash function set");
         printElapsedTime();
         return ids;
@@ -117,10 +89,11 @@ public class HashEnumAlloc extends ConstraintBasedAllocAlgorithm {
             return;
         }
         int enum_threshold = getEnumerationThreshold();
-        IVec<ConstraintID> to_remove = setHashFunction(solver);
+        IVecInt asms = new VecInt();
+        IVec<ConstraintID> to_remove = setHashFunction(solver, asms);
         int nsols_in_cell = 0;
         while (true) {
-            checkSAT(solver);
+            checkSAT(solver, asms);
             if (!solver.isSolved()) {
                 printTimeoutMessage();
                 return;
@@ -146,7 +119,8 @@ public class HashEnumAlloc extends ConstraintBasedAllocAlgorithm {
                     (hashFunctionsEnabled() && nsols_in_cell >= enum_threshold)) {
                 assert(to_remove.size() > 0);
                 solver.removeConstraints(to_remove);
-                to_remove = setHashFunction(solver);
+                asms.clear();
+                to_remove = setHashFunction(solver, asms);
                 nsols_in_cell = 0;
             }
         }
